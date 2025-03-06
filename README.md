@@ -4,7 +4,7 @@ POC for a parquet based TSDB in object storage.
 
 ## Why
 
-This project was inspired by [this excellent talk](https://www.youtube.com/watch?v=V8Y4VuUwg8I) by Shopifys Filip Petkovski. It is an attempt to build a service that can convert Prometheus TSDB blocks into [parquet](https://parquet.apache.org/) files and serve [PromQL queries](https://prometheus.io/docs/prometheus/latest/querying/basics/) to backfill a Thanos deployment.
+This project was inspired by [this excellent talk](https://www.youtube.com/watch?v=V8Y4VuUwg8I) by Shopifys Filip Petkovski. It is an attempt to build a service that can convert Prometheus TSDB blocks into [parquet](https://parquet.apache.org/) files and serve [PromQL](https://prometheus.io) queries to backfill a [Thanos deployment](https://thanos.io/).
 
 ## Developing
 
