@@ -3,7 +3,6 @@ module github.com/cloudflare/parquet-tsdb-poc
 go 1.23.1
 
 require (
-	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6
 	github.com/KimMachineGun/automemlimit v0.6.1
 	github.com/google/go-cmp v0.6.0
 	github.com/hashicorp/go-multierror v1.1.1

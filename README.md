@@ -4,14 +4,14 @@ POC for a parquet based TSDB in object storage.
 
 ## Why
 
-This project was inspired by [this excellent talk](https://www.youtube.com/watch?v=V8Y4VuUwg8I) by Shopifys Filip Petkovski. It is an attempt to build a service that can convert Prometheus TSDB blocks into [parquet](https://parquet.apache.org/) files and serve [PromQL](https://prometheus.io) queries to backfill a [Thanos deployment](https://thanos.io/).
+This project was inspired by [this excellent talk](https://www.youtube.com/watch?v=V8Y4VuUwg8I) by Shopify's Filip Petkovski. It is an attempt to build a service that can convert Prometheus TSDB blocks into [parquet](https://parquet.apache.org/) files and serve [PromQL](https://prometheus.io) queries to backfill a [Thanos deployment](https://thanos.io/).
 
 ## Developing
 
-We recommend to use `nix` to fulfill all development dependencies. To activate the development environment simply run `nix-shell` in the project root.
+We recommend to use `nix` to fulfill all development dependencies. Visit [Nix Download](https://nixos.org/download/) to get started. To activate the development environment simply run `nix-shell` in the project root.
 
-* to build the binary run `nix-shell --run 'make build'`
-* to run tests run `nix-shell --run 'make test'`
+- to build the binary run `nix-shell --run 'make build'`
+- to run tests run `nix-shell --run 'make test'`
 
 ## Running
 
@@ -35,10 +35,10 @@ parquet-gateway serve \
 
 This will:
 
-* load blocks from the `.data/my-prefix` directory
-* expose internal metrics and readiness handlers on port 6060
-* expose a subset of the Prometheus HTTP API on port 9090
-* expose an Thanos Info and Query gRPC service on port 9091
+- load blocks from the `.data/my-prefix` directory
+- expose internal metrics and readiness handlers on port 6060
+- expose a subset of the Prometheus HTTP API on port 9090
+- expose an Thanos Info and Query gRPC service on port 9091
 
 You can now query it by pointing a Thanos Querier at it or through curl:
 
