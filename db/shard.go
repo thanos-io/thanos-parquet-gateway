@@ -204,21 +204,6 @@ func constraintForMatchers(matchers []*labels.Matcher, columnsForName []string) 
 	return search.And(constraints...), nil
 }
 
-func replicaAndExternalLabelProjections(extLabels labels.Labels, replicaLabelNames []string) []string {
-	res := make([]string, 0, extLabels.Len()+len(replicaLabelNames))
-
-	extLabels.Range(func(lbl labels.Label) {
-		res = append(res, schema.LabelNameToColumn(lbl.Name))
-	})
-
-	for i := range replicaLabelNames {
-		res = append(res, schema.LabelNameToColumn(replicaLabelNames[i]))
-	}
-
-	slices.Sort(res)
-	return slices.Compact(res)
-}
-
 func labelProjections(columnsForName []string) []string {
 	return append(columnsForName, schema.LabelNameToColumn(model.MetricNameLabel))
 }
