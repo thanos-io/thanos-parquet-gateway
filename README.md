@@ -10,13 +10,8 @@ This project was inspired by [this excellent talk](https://www.youtube.com/watch
 
 We recommend to use `nix` to fulfill all development dependencies. To activate the development environment simply run `nix-shell` in the project root.
 
-## Building
-
-To run tests simply run `nix-shell --run 'make build'`.
-
-## Testing
-
-To run tests simply run `nix-shell --run 'make test'`.
+* to build the binary run `nix-shell --run 'make build'`.
+* to run tests run `nix-shell --run 'make test'`.
 
 ## Running
 
