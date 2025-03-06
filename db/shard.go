@@ -171,9 +171,8 @@ func constraintForMatchers(matchers []*labels.Matcher, columnsForName []string) 
 			if !validColumn {
 				// equal match on a column that the series does not have; return nothing
 				return search.Null(), nil
-			} else {
-				c = search.Equal(col, val)
 			}
+			c = search.Equal(col, val)
 		case labels.MatchNotEqual:
 			if !validColumn {
 				continue
@@ -183,12 +182,11 @@ func constraintForMatchers(matchers []*labels.Matcher, columnsForName []string) 
 			if !validColumn {
 				// equal match on a column that the series does not have; return nothing
 				return search.Null(), nil
-			} else {
-				var err error
-				c, err = search.Regex(col, m.GetRegexString())
-				if err != nil {
-					return nil, fmt.Errorf("unable to build regex constraint: %s", err)
-				}
+			}
+			var err error
+			c, err = search.Regex(col, m.GetRegexString())
+			if err != nil {
+				return nil, fmt.Errorf("unable to build regex constraint: %s", err)
 			}
 		case labels.MatchNotRegexp:
 			if !validColumn {

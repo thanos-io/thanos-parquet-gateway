@@ -23,7 +23,7 @@ import (
 	"github.com/cloudflare/parquet-tsdb-poc/schema"
 )
 
-type Convertable interface {
+type Convertible interface {
 	Index() (tsdb.IndexReader, error)
 	Chunks() (tsdb.ChunkReader, error)
 	Tombstones() (tombstones.Reader, error)
@@ -85,7 +85,7 @@ func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
 	day time.Time,
-	blks []Convertable,
+	blks []Convertible,
 	opts ...ConvertOption,
 ) error {
 	cfg := &convertOpts{

@@ -19,7 +19,7 @@ import (
 )
 
 // DB is a horizontal partitioning of multiple non-overlapping blocks that are
-// aligned to 24h and span exactely 24h.
+// aligned to 24h and span exactly 24h.
 type DB struct {
 	syncer    syncer
 	extLabels labels.Labels

@@ -164,11 +164,11 @@ func fetchTSDBMetas(ctx context.Context, bkt objstore.BucketReader, from, to tim
 	return res, nil
 }
 
-func overlappingBlocks(blocks []*tsdb.Block, date time.Time) []convert.Convertable {
+func overlappingBlocks(blocks []*tsdb.Block, date time.Time) []convert.Convertible {
 	dateStartMillis := date.UnixMilli()
 	dateEndMillis := date.AddDate(0, 0, 1).UnixMilli()
 
-	res := make([]convert.Convertable, 0)
+	res := make([]convert.Convertible, 0)
 	for _, blk := range blocks {
 		m := blk.Meta()
 		if dateEndMillis >= m.MinTime && dateStartMillis <= m.MaxTime {

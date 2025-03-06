@@ -39,7 +39,7 @@ type indexRowReader struct {
 
 var _ parquet.RowReader = &indexRowReader{}
 
-func newIndexRowReader(ctx context.Context, mint, maxt int64, blks []Convertable) (*indexRowReader, error) {
+func newIndexRowReader(ctx context.Context, mint, maxt int64, blks []Convertible) (*indexRowReader, error) {
 	var (
 		lbls       = make([]string, 0)
 		seriesSets = make([]storage.ChunkSeriesSet, 0, len(blks))
