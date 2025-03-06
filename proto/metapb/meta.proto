@@ -1,0 +1,16 @@
+syntax = "proto3";
+package meta;
+
+option go_package = "github.com/cloudflare/parquet-tsdb-poc/proto/metapb";
+
+
+message Metadata {
+  int64 mint = 1;
+  int64 maxt = 2;
+  int64 shards = 3;
+  map<string, Columns> columnsForName = 4;
+}
+
+message Columns {
+  repeated string columns = 1;
+}
