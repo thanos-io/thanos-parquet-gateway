@@ -10,8 +10,8 @@ This project was inspired by [this excellent talk](https://www.youtube.com/watch
 
 We recommend to use `nix` to fulfill all development dependencies. To activate the development environment simply run `nix-shell` in the project root.
 
-* to build the binary run `nix-shell --run 'make build'`.
-* to run tests run `nix-shell --run 'make test'`.
+* to build the binary run `nix-shell --run 'make build'`
+* to run tests run `nix-shell --run 'make test'`
 
 ## Running
 
@@ -40,7 +40,7 @@ This will:
 * expose a subset of the Prometheus HTTP API on port 9090
 * expose an Thanos Info and Query gRPC service on port 9091
 
-You can now query it by pointing a Thanos Querier at it or through curl as such:
+You can now query it by pointing a Thanos Querier at it or through curl:
 
 ```bash
 curl 'http://0.0.0.0:9000/api/v1/query' \
