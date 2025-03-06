@@ -1,0 +1,61 @@
+name: go
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unittests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: cachix/install-nix-action@v14.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: dx-oss/nix-shell-action@v11
+        with:
+          file: shell.nix
+          script: make test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: cachix/install-nix-action@v14.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: dx-oss/nix-shell-action@v11
+        with:
+          file: shell.nix
+          script: make build
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: cachix/install-nix-action@v14.1
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: dx-oss/nix-shell-action@v11
+        with:
+          file: shell.nix
+          script: make lint
+
+  codespell:
+    runs-on: ubuntu-latest
+    name: Check misspelled words
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Run codespell
+        uses: codespell-project/actions-codespell@v2
+        with:
+          check_filenames: false
+          check_hidden: true
+          skip: ./pkg/ui/*,./pkg/store/6545postingsrepro,./internal/*,./mixin/vendor/*,./.bingo/*,go.mod,go.sum
+          ignore_words_list: intrumentation,mmaped,nd,ot,re-use,ser,serie,sme,sudu,tast,te,ans
