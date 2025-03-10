@@ -61,6 +61,8 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(ctx 
 			return fmt.Errorf("unable to setup parquet bucket: %s", err)
 		}
 
+		log.Info("Sorting by", "labels", opts.conversion.sortLabels)
+
 		// TODO: this is kinda horrible logic here that is not reentrant or robust against errors
 		// But for sake of getting started we can use it to convert the first blocks and then iterate
 
@@ -85,6 +87,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(ctx 
 			}
 			convOpts := []convert.ConvertOption{
 				convert.SortBufSize(opts.conversion.sortBufSize),
+				convert.SortBy(opts.conversion.sortLabels),
 				convert.BufferPool(parquet.NewFileBufferPool(opts.conversion.tempDir, "convert-*")),
 			}
 			if err := convert.ConvertTSDBBlock(ctx, parquetBkt, next, candidates, convOpts...); err != nil {
@@ -97,7 +100,9 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(ctx 
 
 type conversionOpts struct {
 	sortBufSize int
-	tempDir     string
+	sortLabels  []string
+
+	tempDir string
 
 	start, end string
 }
@@ -107,6 +112,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.end", "timestamp of the last parquet block to convert(rounded to start of day)").StringVar(&opts.end)
 	cmd.Flag("convert.tempdir", "directory for temporary state").StringVar(&opts.tempDir)
 	cmd.Flag("convert.sortbuf", "size of sorting buffer").Default("64_000").IntVar(&opts.sortBufSize)
+	cmd.Flag("convert.sorting.label", "label to sort by").Default("__name__").StringsVar(&opts.sortLabels)
 }
 
 func getStartEnd(opts conversionOpts) (time.Time, time.Time, error) {
@@ -145,7 +151,7 @@ func fetchTSDBMetas(ctx context.Context, bkt objstore.BucketReader, from, to tim
 		return nil
 	}, objstore.WithRecursiveIter())
 	if err != nil {
-		return nil, fmt.Errorf("unable to fetch metas")
+		return nil, fmt.Errorf("unable to fetch metas: %w", err)
 	}
 
 	startMillis := util.BeginOfDay(from).UnixMilli()
