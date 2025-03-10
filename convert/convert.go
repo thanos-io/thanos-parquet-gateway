@@ -52,11 +52,11 @@ func (cfg convertOpts) buildBloomfilterColumns() []parquet.BloomFilterColumn {
 }
 
 func (cfg convertOpts) buildSortingColumns() []parquet.SortingColumn {
-	cols := make([]parquet.SortingColumn, 0, len(cfg.bloomfilterColumns))
+	cols := make([]parquet.SortingColumn, 0, len(cfg.sortingColumns))
 
 	for i := range cfg.sortingColumns {
 		cols = append(cols,
-			parquet.Ascending(cfg.bloomfilterColumns[i]...))
+			parquet.Ascending(cfg.sortingColumns[i]...))
 	}
 	return cols
 }
@@ -72,6 +72,16 @@ func RowGroupSize(rbs int) ConvertOption {
 func SortBufSize(sbs int) ConvertOption {
 	return func(opts *convertOpts) {
 		opts.sortBufSize = sbs
+	}
+}
+
+func SortBy(labels []string) ConvertOption {
+	return func(opts *convertOpts) {
+		sortingColumns := make([][]string, len(labels))
+		for i := range labels {
+			sortingColumns[i] = []string{schema.LabelNameToColumn(labels[i])}
+		}
+		opts.sortingColumns = sortingColumns
 	}
 }
 
