@@ -330,7 +330,7 @@ func TestInstantQuery(t *testing.T) {
 			queries: []string{`metric`},
 		},
 		{
-			name: "vector selector with differnt labelnames",
+			name: "vector selector with different labelnames",
 			load: `load 10s
 			    metric{pod="nginx-1", a="foo"} 1+1x40
 			    metric{pod="nginx-1", b="bar"} 1+1x40`,
@@ -1355,7 +1355,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 
 	h := st.DB.Head()
 	day := time.UnixMilli(h.MinTime()).UTC()
-	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertable{h}); err != nil {
+	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{h}); err != nil {
 		tb.Fatal(err)
 	}
 

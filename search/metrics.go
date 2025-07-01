@@ -45,7 +45,7 @@ var (
 	)
 	pagesReadSize = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pages_read_size_bytes_total",
-		Help: "Cummulative size of pages in bytes that were read during parquet operations",
+		Help: "Cumulative size of pages in bytes that were read during parquet operations",
 	}, []string{"column", "method"},
 	)
 	columnMaterialized = prometheus.NewCounterVec(prometheus.CounterOpts{

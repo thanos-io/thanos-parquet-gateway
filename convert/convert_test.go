@@ -63,7 +63,7 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertable{h}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{h}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 

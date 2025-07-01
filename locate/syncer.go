@@ -272,7 +272,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 	if stat, err := os.Stat(labelspfilePath); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("unable to stat label parquet file %q from disk: %w", labelspfile, err)
-			// file didnt exist - we need to download and save it to disk
+			// file didn't exist - we need to download and save it to disk
 		}
 	} else {
 		f, err := fileutil.OpenMmapFileWithSize(labelspfilePath, int(stat.Size()))
