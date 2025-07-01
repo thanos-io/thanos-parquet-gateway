@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -26,8 +26,8 @@ import (
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/alecthomas/kingpin.v2"
 
-	"github.com/cloudflare/parquet-tsdb-poc/convert"
-	"github.com/cloudflare/parquet-tsdb-poc/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/convert"
+	"github.com/thanos-io/thanos-parquet-gateway/locate"
 )
 
 type convertOpts struct {

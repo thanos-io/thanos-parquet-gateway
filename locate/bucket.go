@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -13,7 +13,7 @@ import (
 	"github.com/thanos-io/objstore"
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/cloudflare/parquet-tsdb-poc/internal/tracing"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 )
 
 type bucketReaderAt struct {

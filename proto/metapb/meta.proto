@@ -1,7 +1,7 @@
 syntax = "proto3";
 package meta;
 
-option go_package = "github.com/cloudflare/parquet-tsdb-poc/proto/metapb";
+option go_package = "github.com/thanos-io/thanos-parquet-gateway/proto/metapb";
 
 
 message Metadata {

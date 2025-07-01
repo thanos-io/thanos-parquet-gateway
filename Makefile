@@ -31,7 +31,7 @@ test: $(wildcard **/*.go)
 
 parquet-gateway: $(shell find . -type f -name '*.go')
 	@echo ">> building binaries..."
-	@$(GO) build -tags stringlabels -o parquet-gateway github.com/cloudflare/parquet-tsdb-poc/cmd
+	@$(GO) build -tags stringlabels -o parquet-gateway github.com/thanos-io/thanos-parquet-gateway/cmd
 
 protos: proto/metapb/meta.pb.go
 

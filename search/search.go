@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -20,10 +20,10 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/util/annotations"
 
-	"github.com/cloudflare/parquet-tsdb-poc/internal/limits"
-	"github.com/cloudflare/parquet-tsdb-poc/internal/util"
-	"github.com/cloudflare/parquet-tsdb-poc/internal/warnings"
-	"github.com/cloudflare/parquet-tsdb-poc/schema"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type SeriesChunks struct {

@@ -157,7 +157,7 @@ const file_meta_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12#\n" +
 	"\x05value\x18\x02 \x01(\v2\r.meta.ColumnsR\x05value:\x028\x01\"#\n" +
 	"\aColumns\x12\x18\n" +
-	"\acolumns\x18\x01 \x03(\tR\acolumnsB5Z3github.com/cloudflare/parquet-tsdb-poc/proto/metapbb\x06proto3"
+	"\acolumns\x18\x01 \x03(\tR\acolumnsB:Z8github.com/thanos-io/thanos-parquet-gateway/proto/metapbb\x06proto3"
 
 var (
 	file_meta_proto_rawDescOnce sync.Once

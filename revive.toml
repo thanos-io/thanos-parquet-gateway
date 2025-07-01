@@ -25,7 +25,7 @@ warningCode = 1
 [rule.unreachable-code]
 [rule.redefines-builtin-id]
 [rule.file-header]
-  arguments = ["Copyright \\(c\\) 2025 Cloudflare, Inc."]
+  arguments = ["Copyright \\(c\\) The Thanos Authors."]
 [rule.var-naming]
 arguments = [[], [], [{ skip-package-name-checks = true }]]
 

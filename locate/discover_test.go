@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -23,8 +23,8 @@ import (
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 
-	"github.com/cloudflare/parquet-tsdb-poc/convert"
-	"github.com/cloudflare/parquet-tsdb-poc/internal/util"
+	"github.com/thanos-io/thanos-parquet-gateway/convert"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 )
 
 func TestDiscoverer(t *testing.T) {

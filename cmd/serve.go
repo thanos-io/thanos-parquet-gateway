@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -33,9 +33,9 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
 
-	cfgrpc "github.com/cloudflare/parquet-tsdb-poc/api/grpc"
-	cfhttp "github.com/cloudflare/parquet-tsdb-poc/api/http"
-	cfdb "github.com/cloudflare/parquet-tsdb-poc/db"
+	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
+	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
+	cfdb "github.com/thanos-io/thanos-parquet-gateway/db"
 )
 
 type serveOpts struct {

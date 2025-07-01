@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -17,12 +17,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"gopkg.in/alecthomas/kingpin.v2"
 
-	"github.com/cloudflare/parquet-tsdb-poc/api/grpc"
-	"github.com/cloudflare/parquet-tsdb-poc/api/http"
-	"github.com/cloudflare/parquet-tsdb-poc/convert"
-	"github.com/cloudflare/parquet-tsdb-poc/db"
-	"github.com/cloudflare/parquet-tsdb-poc/locate"
-	"github.com/cloudflare/parquet-tsdb-poc/search"
+	"github.com/thanos-io/thanos-parquet-gateway/api/grpc"
+	"github.com/thanos-io/thanos-parquet-gateway/api/http"
+	"github.com/thanos-io/thanos-parquet-gateway/convert"
+	"github.com/thanos-io/thanos-parquet-gateway/db"
+	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/search"
 )
 
 var logLevelMap = map[string]slog.Level{

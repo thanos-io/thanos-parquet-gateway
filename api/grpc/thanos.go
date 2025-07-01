@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Cloudflare, Inc.
+// Copyright (c) The Thanos Authors.
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
@@ -25,9 +25,9 @@ import (
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 	"github.com/thanos-io/thanos/pkg/store/storepb/prompb"
 
-	"github.com/cloudflare/parquet-tsdb-poc/db"
-	"github.com/cloudflare/parquet-tsdb-poc/internal/limits"
-	"github.com/cloudflare/parquet-tsdb-poc/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/db"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 )
 
 // Taken from https://github.com/thanos-community/thanos-promql-connector/blob/main/main.go

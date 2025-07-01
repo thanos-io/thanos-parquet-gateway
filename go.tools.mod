@@ -1,4 +1,4 @@
-module github.com/cloudflare/parquet-tsdb-poc
+module github.com/thanos-io/thanos-parquet-gateway
 
 go 1.24.2
 

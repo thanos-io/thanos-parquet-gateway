@@ -1,4 +1,4 @@
-# parquet-tsdb-poc
+# thanos-parquet-gateway
 
 POC for a parquet based TSDB in object storage.
 
