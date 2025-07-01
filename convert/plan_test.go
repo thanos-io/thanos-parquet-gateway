@@ -51,7 +51,7 @@ func TestPlanner(t *testing.T) {
 			expectOk: false,
 		},
 		{
-			name:     "three blocks cover a full day, previous parquet file for intial overlap",
+			name:     "three blocks cover a full day, previous parquet file for initial overlap",
 			notAfter: time.UnixMilli(math.MaxInt64),
 			tsdbMetas: map[string]metadata.Meta{
 				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {

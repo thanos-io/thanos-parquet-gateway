@@ -16,7 +16,7 @@ type resourceExhausted struct {
 }
 
 func (re *resourceExhausted) Error() string {
-	return fmt.Sprintf("resouce exhausted (used %d)", re.used)
+	return fmt.Sprintf("resource exhausted (used %d)", re.used)
 }
 
 func IsResourceExhausted(err error) bool {

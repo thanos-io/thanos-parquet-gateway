@@ -108,7 +108,7 @@ func (opts *discoveryOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
 func (opts *tsdbDiscoveryOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("tsdb.discovery.interval", "interval to discover blocks").Default("30m").DurationVar(&opts.discoveryInterval)
 	cmd.Flag("tsdb.discovery.concurrency", "concurrency for loading metadata").Default("1").IntVar(&opts.discoveryConcurrency)
-	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this wont be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
+	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this won't be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
 	MatchersVar(cmd.Flag("tsdb.discovery.select-external-labels", "only external labels matching this selector will be discovered").PlaceHolder("SELECTOR"), &opts.externalLabelMatchers)
 }
 
@@ -258,8 +258,8 @@ func cleanupDirectory(dir string) error {
 	return nil
 }
 
-func overlappingBlocks(blocks []convert.Convertable, date time.Time) []convert.Convertable {
-	res := make([]convert.Convertable, 0)
+func overlappingBlocks(blocks []convert.Convertible, date time.Time) []convert.Convertible {
+	res := make([]convert.Convertible, 0)
 	for _, m := range blocks {
 		if date.AddDate(0, 0, 1).UnixMilli() >= m.Meta().MinTime && date.UnixMilli() <= m.Meta().MaxTime {
 			res = append(res, m)
@@ -279,10 +279,10 @@ func ulidsFromMetas(metas []metadata.Meta) []string {
 	return res
 }
 
-func downloadedBlocks(ctx context.Context, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertable, error) {
+func downloadedBlocks(ctx context.Context, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
 	slogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 
-	res := make([]convert.Convertable, 0)
+	res := make([]convert.Convertible, 0)
 	for _, m := range metas {
 		src := m.ULID.String()
 		dst := filepath.Join(blkDir, src)

@@ -213,7 +213,7 @@ func createBlockForDay(ctx context.Context, t *testing.T, bkt objstore.Bucket, d
 	}
 
 	h := st.Head()
-	if err := convert.ConvertTSDBBlock(ctx, bkt, d, []convert.Convertable{h}); err != nil {
+	if err := convert.ConvertTSDBBlock(ctx, bkt, d, []convert.Convertible{h}); err != nil {
 		return fmt.Errorf("unable to convert blocks: %s", err)
 	}
 	return nil
