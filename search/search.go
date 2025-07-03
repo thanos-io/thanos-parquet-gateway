@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
@@ -148,7 +149,7 @@ func LabelValues(
 	name string,
 	hints *storage.LabelHints,
 	ms ...*labels.Matcher,
-) ([]string, annotations.Annotations, error) {
+) (_ []string, _ annotations.Annotations, rerr error) {
 	ctx = contextWithMethod(ctx, methodLabelValues)
 
 	ms, ok := matchExternalLabels(meta.ExternalLabels, ms)
@@ -171,7 +172,7 @@ func LabelValues(
 				continue
 			}
 			pg := rg.ColumnChunks()[lc.ColumnIndex].Pages()
-			defer pg.Close()
+			defer errcapture.Do(&rerr, pg.Close, "column chunk pages close")
 
 			p, err := pg.ReadPage()
 			if err != nil {

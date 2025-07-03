@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
@@ -598,7 +599,7 @@ func materializeChunkColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 	rowsMaterialized.WithLabelValues(column, method).Add(float64(rowCount))
 
 	for _, p := range pageRanges {
-		g.Go(func() error {
+		g.Go(func() (rerr error) {
 			ctx, span := tracing.Tracer().Start(ctx, "Materialize Page Range")
 			defer span.End()
 
@@ -619,7 +620,7 @@ func materializeChunkColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 			pagesReadSize.WithLabelValues(column, method).Add(float64(maxOffset - minOffset))
 
 			pgs := cc.(*parquet.FileColumnChunk).PagesFrom(bufRdrAt)
-			defer func() { _ = pgs.Close() }()
+			defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
 
 			if err := pgs.SeekToRow(p.rows[0].from); err != nil {
 				return fmt.Errorf("could not seek to row: %w", err)
@@ -739,7 +740,7 @@ func materializeLabelColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 	rowsMaterialized.WithLabelValues(column, method).Add(float64(rowCount))
 
 	for _, p := range pageRanges {
-		g.Go(func() error {
+		g.Go(func() (rerr error) {
 			minOffset := oidx.Offset(p.pages[0])
 			maxOffset := oidx.Offset(p.pages[len(p.pages)-1]) + oidx.CompressedPageSize(p.pages[len(p.pages)-1])
 
@@ -747,7 +748,7 @@ func materializeLabelColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 			pagesReadSize.WithLabelValues(column, method).Add(float64(maxOffset - minOffset))
 
 			pgs := cc.Pages()
-			defer func() { _ = pgs.Close() }()
+			defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
 
 			if err := pgs.SeekToRow(p.rows[0].from); err != nil {
 				return fmt.Errorf("could not seek to row: %w", err)

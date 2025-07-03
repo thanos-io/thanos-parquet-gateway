@@ -10,6 +10,7 @@ import (
 	"io"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	"github.com/thanos-io/objstore"
 	"go.opentelemetry.io/otel/attribute"
 
@@ -30,7 +31,7 @@ func newBucketReaderAt(ctx context.Context, bkt objstore.Bucket, name string) *b
 	}
 }
 
-func (br *bucketReaderAt) ReadAt(p []byte, off int64) (int, error) {
+func (br *bucketReaderAt) ReadAt(p []byte, off int64) (_ int, rerr error) {
 	ctx, span := tracing.Tracer().Start(br.ctx, "Bucket Get Range")
 	defer span.End()
 
@@ -44,7 +45,7 @@ func (br *bucketReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("unable to read range for %s: %w", br.name, err)
 	}
-	defer rdc.Close()
+	defer errcapture.Do(&rerr, rdc.Close, "bucket reader close")
 
 	n, err := io.ReadFull(rdc, p)
 	if n == len(p) {

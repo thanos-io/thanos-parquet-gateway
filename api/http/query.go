@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -559,7 +560,7 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
 		return
 	}
-	defer q.Close()
+	defer errcapture.Do(&err, q.Close, "query close")
 
 	var (
 		sets []storage.SeriesSet

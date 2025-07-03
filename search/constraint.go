@@ -11,6 +11,7 @@ import (
 	"sort"
 	"unsafe"
 
+	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 
@@ -118,7 +119,7 @@ func Equal(path string, value parquet.Value) Constraint {
 	return &equalConstraint{pth: path, val: value}
 }
 
-func (ec *equalConstraint) filter(ctx context.Context, rg parquet.RowGroup, primary bool, rr []rowRange) ([]rowRange, error) {
+func (ec *equalConstraint) filter(ctx context.Context, rg parquet.RowGroup, primary bool, rr []rowRange) (_ []rowRange, rerr error) {
 	if len(rr) == 0 {
 		return nil, nil
 	}
@@ -144,7 +145,7 @@ func (ec *equalConstraint) filter(ctx context.Context, rg parquet.RowGroup, prim
 	}
 
 	pgs := cc.Pages()
-	defer func() { _ = pgs.Close() }()
+	defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
 
 	oidx, err := cc.OffsetIndex()
 	if err != nil {
@@ -298,7 +299,7 @@ func (rc *regexConstraint) String() string {
 	return fmt.Sprintf("regex(%v,%v)", rc.pth, rc.r.GetRegexString())
 }
 
-func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bool, rr []rowRange) ([]rowRange, error) {
+func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bool, rr []rowRange) (_ []rowRange, rerr error) {
 	if len(rr) == 0 {
 		return nil, nil
 	}
@@ -318,7 +319,7 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 	cc := rg.ColumnChunks()[col.ColumnIndex]
 
 	pgs := cc.Pages()
-	defer func() { _ = pgs.Close() }()
+	defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
 
 	oidx, err := cc.OffsetIndex()
 	if err != nil {

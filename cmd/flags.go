@@ -37,5 +37,4 @@ func (a *matcherSlice) String() string {
 
 func MatchersVar(flags *kingpin.FlagClause, target *matcherSlice) {
 	flags.SetValue((*matcherSlice)(target))
-	return
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
@@ -283,7 +284,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	return nil
 }
 
-func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) error {
+func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
 	if !request.SkipChunks {
 		return status.Error(codes.Unimplemented, "'series' called without skipping chunks")
 	}
@@ -292,7 +293,7 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
-	defer q.Close()
+	defer errcapture.Do(&rerr, q.Close, "querier close")
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
@@ -342,12 +343,12 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	return nil
 }
 
-func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
+func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (_ *storepb.LabelNamesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	defer q.Close()
+	defer errcapture.Do(&rerr, q.Close, "querier close")
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
@@ -364,12 +365,12 @@ func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNam
 	}, nil
 }
 
-func (qs *QueryServer) LabelValues(ctx context.Context, request *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
+func (qs *QueryServer) LabelValues(ctx context.Context, request *storepb.LabelValuesRequest) (_ *storepb.LabelValuesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	defer q.Close()
+	defer errcapture.Do(&rerr, q.Close, "querier close")
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {

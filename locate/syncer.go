@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
 	"github.com/thanos-io/objstore"
@@ -294,13 +295,13 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 	if err != nil {
 		return nil, fmt.Errorf("unable to get %q: %w", labelspfile, err)
 	}
-	defer rdr.Close()
+	defer errcapture.Do(&err, rdr.Close, "labels parquet file close")
 
 	f, err := os.Create(labelspfilePath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create label parquet file %q on disk: %w", labelspfile, err)
 	}
-	defer f.Close()
+	defer errcapture.Do(&err, f.Close, "labels parquet file close")
 
 	n, err := io.Copy(f, rdr)
 	if err != nil {
