@@ -346,7 +346,6 @@ func (c *converter) optimizeShard(ctx context.Context, i int) (rerr error) {
 
 	buf := bytes.NewBuffer(nil)
 	w := parquet.NewGenericWriter[any](buf, append(c.labelWriterOptions(), ns)...)
-	defer errcapture.Do(&rerr, w.Close, "labels parquet file writer close")
 
 	rb := parquet.NewRowBuilder(ns)
 	rowBuf := make([]parquet.Row, 128)
@@ -388,6 +387,10 @@ func (c *converter) optimizeShard(ctx context.Context, i int) (rerr error) {
 				break
 			}
 		}
+	}
+
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("unable to close writer: %w", err)
 	}
 	if err := c.bkt.Upload(ctx, schema.LabelsPfileNameForShard(c.name, i), buf); err != nil {
 		return fmt.Errorf("unable to override optimized labels parquet file: %w", err)
