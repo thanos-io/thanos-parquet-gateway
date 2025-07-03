@@ -22,10 +22,15 @@ import (
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
+	"go.uber.org/goleak"
 
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestDiscoverer(t *testing.T) {
 	t.Run("Discoverer discovers newly uploaded blocks", func(tt *testing.T) {

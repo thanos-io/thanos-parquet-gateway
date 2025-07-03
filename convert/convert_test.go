@@ -21,11 +21,16 @@ import (
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"go.uber.org/goleak"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestConverter(t *testing.T) {
 	st := teststorage.New(t)

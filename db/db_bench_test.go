@@ -18,6 +18,7 @@ import (
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"go.uber.org/goleak"
 )
 
 type countingBucket struct {
@@ -26,6 +27,10 @@ type countingBucket struct {
 	nGet       atomic.Int32
 	nGetRange  atomic.Int32
 	bsGetRange atomic.Int64
+}
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
 }
 
 func (b *countingBucket) ResetCounters() {
