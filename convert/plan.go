@@ -22,9 +22,9 @@ type Plan struct {
 
 type Planner struct {
 	// do not create parquet blocks that are younger then this
-	notAfter         time.Time
-	lineageChecker   *BlockLineageChecker
-	skipRedundant    bool
+	notAfter       time.Time
+	lineageChecker *BlockLineageChecker
+	skipRedundant  bool
 }
 
 func NewPlannerWithOptions(notAfter time.Time, skipRedundant bool) Planner {
@@ -124,18 +124,18 @@ func (p Planner) overlappingBlockMetasWithLineage(
 	parquetMetas map[string]schema.Meta,
 ) []metadata.Meta {
 	candidates := overlappingBlockMetas(metas, date)
-	
+
 	if !p.skipRedundant {
 		return candidates // Return all candidates if lineage checking is disabled
 	}
-	
+
 	filtered := make([]metadata.Meta, 0)
-	
+
 	for _, meta := range candidates {
 		if !p.lineageChecker.IsRedundantConversion(meta, date, parquetMetas) {
 			filtered = append(filtered, meta)
 		}
 	}
-	
+
 	return filtered
 }

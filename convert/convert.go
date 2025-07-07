@@ -214,7 +214,7 @@ type converter struct {
 
 	labelPageBufferSize int
 	chunkPageBufferSize int
-	
+
 	sourceBlocks []string // ULIDs of source TSDB blocks
 }
 

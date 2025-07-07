@@ -6,6 +6,7 @@ package convert
 
 import (
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/thanos-io/thanos/pkg/block/metadata"
@@ -31,25 +32,23 @@ func (blc *BlockLineageChecker) IsRedundantConversion(
 	parquetMetas map[string]schema.Meta,
 ) bool {
 	blockULID := tsdbBlock.ULID.String()
-	
+
 	// Check if this exact TSDB block has already been used as source for any parquet block
 	for _, parquetMeta := range parquetMetas {
-		for _, sourceBlock := range parquetMeta.SourceBlocks {
-			if sourceBlock == blockULID {
-				blc.logger.Info("Block already converted",
-					"tsdb_block", blockULID,
-					"parquet_block", parquetMeta.Name,
-					"day", day.Format("2006-01-02"))
-				return true
-			}
+		if slices.Contains(parquetMeta.SourceBlocks, blockULID) {
+			blc.logger.Info("Block already converted",
+				"tsdb_block", blockULID,
+				"parquet_block", parquetMeta.Name,
+				"day", day.Format("2006-01-02"))
+			return true
 		}
 	}
-	
+
 	// Check if this is a compacted block and its constituent blocks have been converted
 	if len(tsdbBlock.BlockMeta.Compaction.Parents) > 0 {
 		return blc.isCompactedBlockRedundant(tsdbBlock, day, parquetMetas)
 	}
-	
+
 	return false
 }
 
@@ -64,21 +63,21 @@ func (blc *BlockLineageChecker) isCompactedBlockRedundant(
 	for _, parent := range compactedBlock.BlockMeta.Compaction.Parents {
 		parentULIDs[parent.ULID.String()] = false // false = not found in parquet blocks
 	}
-	
+
 	// Check if all parent blocks have been used as sources for parquet blocks
 	// covering the same day
 	dayStart := util.BeginOfDay(day)
 	dayEnd := util.EndOfDay(day)
-	
+
 	for _, parquetMeta := range parquetMetas {
 		// Only consider parquet blocks that overlap with the day we're checking
 		parquetStart := time.UnixMilli(parquetMeta.Mint)
 		parquetEnd := time.UnixMilli(parquetMeta.Maxt)
-		
+
 		if parquetEnd.Before(dayStart) || parquetStart.After(dayEnd) {
 			continue // No overlap with the day
 		}
-		
+
 		// Mark any parent blocks found in this parquet block's sources
 		for _, sourceBlock := range parquetMeta.SourceBlocks {
 			if _, exists := parentULIDs[sourceBlock]; exists {
@@ -86,7 +85,7 @@ func (blc *BlockLineageChecker) isCompactedBlockRedundant(
 			}
 		}
 	}
-	
+
 	// Check if all parent blocks covering this day have been converted
 	allParentsConverted := true
 	for parentULID, found := range parentULIDs {
@@ -99,7 +98,7 @@ func (blc *BlockLineageChecker) isCompactedBlockRedundant(
 			allParentsConverted = false
 		}
 	}
-	
+
 	if allParentsConverted && len(parentULIDs) > 0 {
 		blc.logger.Info("Compacted block is redundant - all parent blocks already converted",
 			"compacted_block", compactedBlock.ULID.String(),
@@ -107,7 +106,7 @@ func (blc *BlockLineageChecker) isCompactedBlockRedundant(
 			"day", day.Format("2006-01-02"))
 		return true
 	}
-	
+
 	return false
 }
 
@@ -122,24 +121,21 @@ func (blc *BlockLineageChecker) GetConflictingParquetBlocks(
 	blockULID := tsdbBlock.ULID.String()
 	dayStart := util.BeginOfDay(day)
 	dayEnd := util.EndOfDay(day)
-	
+
 	for parquetName, parquetMeta := range parquetMetas {
 		// Check if parquet block overlaps with the day
 		parquetStart := time.UnixMilli(parquetMeta.Mint)
 		parquetEnd := time.UnixMilli(parquetMeta.Maxt)
-		
+
 		if parquetEnd.Before(dayStart) || parquetStart.After(dayEnd) {
 			continue // No overlap
 		}
-		
+
 		// Check if this parquet block was created from the same TSDB block
-		for _, sourceBlock := range parquetMeta.SourceBlocks {
-			if sourceBlock == blockULID {
-				conflicts = append(conflicts, parquetName)
-				break
-			}
+		if slices.Contains(parquetMeta.SourceBlocks, blockULID) {
+			conflicts = append(conflicts, parquetName)
 		}
 	}
-	
+
 	return conflicts
 }
