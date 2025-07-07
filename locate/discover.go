@@ -21,6 +21,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
+	"github.com/thanos-io/thanos/pkg/compact/downsample"
 
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -369,6 +370,11 @@ func (s *TSDBDiscoverer) Discover(ctx context.Context) error {
 			}
 		}
 		return false
+	})
+
+	// filter for metas that are not downsampled
+	maps.DeleteFunc(nm, func(_ string, v metadata.Meta) bool {
+		return v.Thanos.Downsample.Resolution != downsample.ResLevel0
 	})
 
 	s.mu.Lock()
