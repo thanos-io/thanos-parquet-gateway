@@ -162,6 +162,12 @@ func ConvertTSDBBlock(
 	}
 	defer rr.Close()
 
+	// Extract source block ULIDs
+	sourceBlocks := make([]string, len(blks))
+	for i, blk := range blks {
+		sourceBlocks[i] = blk.Meta().ULID.String()
+	}
+
 	converter := newConverter(
 		name,
 		start.UnixMilli(),
@@ -176,6 +182,7 @@ func ConvertTSDBBlock(
 		cfg.chunkbufferPool,
 		cfg.labelPageBufferSize,
 		cfg.chunkPageBufferSize,
+		sourceBlocks,
 	)
 
 	if err := converter.convert(ctx); err != nil {
@@ -207,6 +214,8 @@ type converter struct {
 
 	labelPageBufferSize int
 	chunkPageBufferSize int
+	
+	sourceBlocks []string // ULIDs of source TSDB blocks
 }
 
 func newConverter(
@@ -223,6 +232,7 @@ func newConverter(
 	chunkBufferPool parquet.BufferPool,
 	labelPageBufferSize int,
 	chunkPageBufferSize int,
+	sourceBlocks []string,
 
 ) *converter {
 	return &converter{
@@ -242,6 +252,7 @@ func newConverter(
 
 		labelPageBufferSize: labelPageBufferSize,
 		chunkPageBufferSize: chunkPageBufferSize,
+		sourceBlocks:        sourceBlocks,
 	}
 }
 
@@ -283,10 +294,11 @@ func (c *converter) convert(ctx context.Context) error {
 
 func (c *converter) writeMetaFile(ctx context.Context) error {
 	meta := &metapb.Metadata{
-		Version: schema.V2,
-		Mint:    c.mint,
-		Maxt:    c.maxt,
-		Shards:  int64(c.currentShard) + 1,
+		Version:      schema.V2,
+		Mint:         c.mint,
+		Maxt:         c.maxt,
+		Shards:       int64(c.currentShard) + 1,
+		SourceBlocks: c.sourceBlocks,
 	}
 
 	metaBytes, err := proto.Marshal(meta)

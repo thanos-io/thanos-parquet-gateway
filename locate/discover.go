@@ -206,6 +206,7 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string) (schema
 		Maxt:           metapb.GetMaxt(),
 		Shards:         metapb.GetShards(),
 		ColumnsForName: m,
+		SourceBlocks:   metapb.GetSourceBlocks(),
 	}, nil
 }
 

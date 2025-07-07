@@ -10,6 +10,7 @@ message Metadata {
   int64 shards = 3;
   map<string, Columns> columnsForName = 4;
   int64 version = 5;
+  repeated string sourceBlocks = 6;  // ULIDs of TSDB blocks used to create this parquet block
 }
 
 message Columns {
