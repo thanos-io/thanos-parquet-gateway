@@ -1,0 +1,7 @@
+type: AZURE
+config:
+  storage_account: ""
+  storage_account_key: ""
+  container: "thanos"
+  endpoint: ""
+  max_retries: 0
