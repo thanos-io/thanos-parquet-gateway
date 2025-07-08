@@ -80,3 +80,45 @@ parquet-gateway convert \
 ## Note
 
 The code has significant overlap with the work in "https://github.com/prometheus-community/parquet-common". We are in the process of upstreaming and eventually plan to use it as a library.
+
+## CI/CD Setup
+
+### CircleCI Configuration
+
+This project uses CircleCI for continuous integration and deployment. The workflow includes:
+
+- **Testing**: Runs tests and linting on every commit
+- **Main Branch Deployment**: Builds and pushes Docker images to Quay.io on main branch commits
+- **Release Deployment**: Creates release artifacts and publishes Docker images for tagged releases
+
+For detailed setup instructions, see [CircleCI Setup Documentation](docs/CIRCLECI_SETUP.md).
+
+### Required Environment Variables
+
+To enable the CircleCI workflow, configure these environment variables in your CircleCI project settings:
+
+- `QUAY_USERNAME`: Your Quay.io username
+- `QUAY_PASSWORD`: Your Quay.io password or robot token
+
+### Docker Images
+
+Docker images are published to `quay.io/thanos-io/thanos-parquet-gateway` with the following tags:
+
+- `latest`: Latest main branch build
+- `<git-commit-sha>`: Specific commit builds
+- `<version-tag>`: Release versions (e.g., `v1.0.0`)
+
+### Manual Docker Build
+
+You can build Docker images locally using:
+
+```bash
+make docker-build
+make docker-test
+```
+
+Or push to a custom registry:
+
+```bash
+make docker-push DOCKER_IMAGE_REPO=your-registry/thanos-parquet-gateway
+```

@@ -1,0 +1,31 @@
+# Git
+.git
+.gitignore
+
+# CI/CD
+.circleci
+
+# Build artifacts
+parquet-gateway
+.build
+.tarballs
+.cover
+
+# Documentation
+README.md
+LICENSE
+
+# Development files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
