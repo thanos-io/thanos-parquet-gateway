@@ -10,10 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/pprof"
+	"os"
 	"strings"
 	"time"
-
-	"gopkg.in/yaml.v3"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/jaeger"
@@ -29,6 +28,7 @@ import (
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/client"
 	"github.com/thanos-io/thanos/pkg/runutil"
+	"gopkg.in/alecthomas/kingpin.v2"
 
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 )
@@ -45,65 +45,42 @@ func setupInterrupt(ctx context.Context, g *run.Group, log *slog.Logger) {
 }
 
 type bucketOpts struct {
-	storage string
-	prefix  string
+	// Thanos-style configuration
+	configFile string
+	config     string
+}
 
-	// filesystem options
-	filesystemDirectory string
+// registerThanosStyleFlags registers the standard Thanos objstore flags
+func (opts *bucketOpts) registerThanosStyleFlags(cmd *kingpin.CmdClause, prefix string) {
+	configFlagSuffix := ".objstore.config"
+	configFlag := strings.TrimPrefix(prefix+configFlagSuffix, ".")
+	cmd.Flag(configFlag, "Alternative to 'objstore.config-file' flag (mutually exclusive). Content of YAML file that contains object store configuration. See format details: https://thanos.io/tip/thanos/storage.md/#configuration").
+		PlaceHolder("<content>").StringVar(&opts.config)
 
-	// s3 options
-	s3Bucket    string
-	s3Endpoint  string
-	s3AccessKey string
-	s3SecretKey string
-	s3Insecure  bool
-
-	retries int
+	configFileFlagSuffix := ".objstore.config-file"
+	configFileFlag := strings.TrimPrefix(prefix+configFileFlagSuffix, ".")
+	cmd.Flag(configFileFlag, "Path to YAML file that contains object store configuration. See format details: https://thanos.io/tip/thanos/storage.md/#configuration").
+		PlaceHolder("<file-path>").StringVar(&opts.configFile)
 }
 
 func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
-	prov := objstore.ObjProvider(strings.ToUpper(opts.storage))
-	cfg := client.BucketConfig{
-		Type:   prov,
-		Prefix: opts.prefix,
-	}
-	var subCfg any
-	switch prov {
-	case objstore.FILESYSTEM:
-		subCfg = struct {
-			Directory string `yaml:"directory"`
-		}{
-			Directory: opts.filesystemDirectory,
+	var confContentYaml []byte
+	var err error
+
+	if opts.configFile != "" {
+		confContentYaml, err = os.ReadFile(opts.configFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading config file: %w", err)
 		}
-	case objstore.S3:
-		subCfg = struct {
-			Bucket     string `yaml:"bucket"`
-			Endpoint   string `yaml:"endpoint"`
-			AccessKey  string `yaml:"access_key"`
-			SecretKey  string `yaml:"secret_key"`
-			MaxRetries int    `yaml:"max_retries"`
-			Insecure   bool   `yaml:"insecure"`
-		}{
-			Bucket:     opts.s3Bucket,
-			Endpoint:   opts.s3Endpoint,
-			AccessKey:  opts.s3AccessKey,
-			SecretKey:  opts.s3SecretKey,
-			Insecure:   opts.s3Insecure,
-			MaxRetries: opts.retries,
-		}
-	default:
-		return nil, fmt.Errorf("unknown bucket type: %s", prov)
+	} else if opts.config != "" {
+		confContentYaml = []byte(opts.config)
+	} else {
+		return nil, fmt.Errorf("no objstore configuration provided. Use --objstore.config-file or --objstore.config")
 	}
 
-	cfg.Config = subCfg
-	bytes, err := yaml.Marshal(cfg)
+	bkt, err := client.NewBucket(slogAdapter{log}, confContentYaml, "thanos-parquet-gateway", nil)
 	if err != nil {
-		return nil, fmt.Errorf("unable to marshal bucket config yaml: %w", err)
-	}
-
-	bkt, err := client.NewBucket(slogAdapter{log}, bytes, "parquet-gateway", nil)
-	if err != nil {
-		return nil, fmt.Errorf("unable to create bucket client: %w", err)
+		return nil, fmt.Errorf("creating bucket client: %w", err)
 	}
 
 	return bkt, nil
