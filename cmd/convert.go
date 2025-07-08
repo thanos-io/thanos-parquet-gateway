@@ -51,6 +51,7 @@ type conversionOpts struct {
 	rowGroupCount       int
 	downloadConcurrency int
 	encodingConcurrency int
+	skipRedundant       bool
 
 	tempDir string
 }
@@ -76,6 +77,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.sorting.label", "label to sort by").Default("__name__").StringsVar(&opts.sortLabels)
 	cmd.Flag("convert.download.concurrency", "concurrency for downloading tsdb blocks").Default("4").IntVar(&opts.downloadConcurrency)
 	cmd.Flag("convert.encoding.concurrency", "concurrency for encoding chunks").Default("4").IntVar(&opts.encodingConcurrency)
+	cmd.Flag("convert.skip-redundant", "skip conversion of blocks that have already been converted").Default("true").BoolVar(&opts.skipRedundant)
 }
 
 func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
@@ -204,7 +206,7 @@ func advanceConversion(
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
 
-	plan, ok := convert.NewPlanner(time.Now().Add(-opts.gracePeriod)).Plan(tsdbMetas, parquetMetas)
+	plan, ok := convert.NewPlannerWithOptions(time.Now().Add(-opts.gracePeriod), opts.skipRedundant).Plan(tsdbMetas, parquetMetas)
 	if !ok {
 		log.Info("Nothing to do")
 		return nil

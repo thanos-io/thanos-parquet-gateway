@@ -23,6 +23,7 @@ type Meta struct {
 	Mint, Maxt     int64
 	Shards         int64
 	ColumnsForName map[string][]string
+	SourceBlocks   []string // ULIDs of TSDB blocks used to create this parquet block
 }
 
 func SplitBlockPath(name string) (string, string, bool) {
