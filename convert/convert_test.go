@@ -7,6 +7,7 @@ package convert
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -16,11 +17,15 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	jsoniter "github.com/json-iterator/go"
+	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"go.uber.org/goleak"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
@@ -237,4 +242,169 @@ func nameColumnValuesAreIncreasing(pf *parquet.File) error {
 		}
 	}
 	return nil
+}
+
+func TestUpdateTSDBBlockMetadata(t *testing.T) {
+	ctx := context.Background()
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	// Create a mock TSDB block metadata file
+	mockMeta := metadata.Meta{
+		BlockMeta: tsdb.BlockMeta{
+			ULID: ulid.MustNew(ulid.Now(), rand.Reader),
+		},
+		Thanos: metadata.Thanos{
+			Version: 1,
+			Labels:  map[string]string{"cluster": "test"},
+		},
+	}
+
+	// Upload the initial meta.json file
+	metaPath := mockMeta.ULID.String() + "/meta.json"
+	var buf bytes.Buffer
+	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
+	encoder.SetIndent("", "\t")
+	if err := encoder.Encode(&mockMeta); err != nil {
+		t.Fatalf("unable to encode initial meta.json: %s", err)
+	}
+	if err := bkt.Upload(ctx, metaPath, &buf); err != nil {
+		t.Fatalf("unable to upload initial meta.json: %s", err)
+	}
+
+	// Call the function to update metadata
+	err = updateTSDBBlockMetadata(ctx, bkt, []metadata.Meta{mockMeta})
+	if err != nil {
+		t.Fatalf("unexpected error updating metadata: %s", err)
+	}
+
+	// Read back the updated meta.json file
+	rc, err := bkt.Get(ctx, metaPath)
+	if err != nil {
+		t.Fatalf("unable to get updated meta.json: %s", err)
+	}
+	defer rc.Close()
+
+	var updatedMeta metadata.Meta
+	if err := jsoniter.ConfigCompatibleWithStandardLibrary.NewDecoder(rc).Decode(&updatedMeta); err != nil {
+		t.Fatalf("unable to decode updated meta.json: %s", err)
+	}
+
+	// Verify the Extensions field was updated
+	if updatedMeta.Thanos.Extensions == nil {
+		t.Fatal("Extensions field is nil after update")
+	}
+
+	extensionsMap, ok := updatedMeta.Thanos.Extensions.(map[string]any)
+	if !ok {
+		t.Fatal("Extensions field is not a map[string]any")
+	}
+
+	migratedFlag, exists := extensionsMap["parquet_migrated"]
+	if !exists {
+		t.Fatal("parquet_migrated flag not found in Extensions")
+	}
+
+	migratedBool, ok := migratedFlag.(bool)
+	if !ok {
+		t.Fatalf("parquet_migrated flag is not a bool, got type: %T", migratedFlag)
+	}
+
+	if !migratedBool {
+		t.Fatal("parquet_migrated flag should be true")
+	}
+
+	// Verify other fields are preserved
+	if updatedMeta.ULID != mockMeta.ULID {
+		t.Fatal("ULID was not preserved")
+	}
+	if updatedMeta.Thanos.Version != mockMeta.Thanos.Version {
+		t.Fatal("Thanos version was not preserved")
+	}
+	if !maps.Equal(updatedMeta.Thanos.Labels, mockMeta.Thanos.Labels) {
+		t.Fatal("Thanos labels were not preserved")
+	}
+}
+
+func TestUpdateTSDBBlockMetadataWithExistingExtensions(t *testing.T) {
+	ctx := context.Background()
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	// Create a mock TSDB block metadata file with existing extensions
+	existingExtensions := map[string]any{
+		"existing_key": "existing_value",
+		"number_key":   42,
+	}
+
+	mockMeta := metadata.Meta{
+		BlockMeta: tsdb.BlockMeta{
+			ULID: ulid.MustNew(ulid.Now(), rand.Reader),
+		},
+		Thanos: metadata.Thanos{
+			Version:    1,
+			Labels:     map[string]string{"cluster": "test"},
+			Extensions: existingExtensions,
+		},
+	}
+
+	// Upload the initial meta.json file
+	metaPath := mockMeta.ULID.String() + "/meta.json"
+	var buf bytes.Buffer
+	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
+	encoder.SetIndent("", "\t")
+	if err := encoder.Encode(&mockMeta); err != nil {
+		t.Fatalf("unable to encode initial meta.json: %s", err)
+	}
+	if err := bkt.Upload(ctx, metaPath, &buf); err != nil {
+		t.Fatalf("unable to upload initial meta.json: %s", err)
+	}
+
+	// Call the function to update metadata
+	err = updateTSDBBlockMetadata(ctx, bkt, []metadata.Meta{mockMeta})
+	if err != nil {
+		t.Fatalf("unexpected error updating metadata: %s", err)
+	}
+
+	// Read back the updated meta.json file
+	rc, err := bkt.Get(ctx, metaPath)
+	if err != nil {
+		t.Fatalf("unable to get updated meta.json: %s", err)
+	}
+	defer rc.Close()
+
+	var updatedMeta metadata.Meta
+	if err := jsoniter.ConfigCompatibleWithStandardLibrary.NewDecoder(rc).Decode(&updatedMeta); err != nil {
+		t.Fatalf("unable to decode updated meta.json: %s", err)
+	}
+
+	// Verify the Extensions field was updated
+	extensionsMap, ok := updatedMeta.Thanos.Extensions.(map[string]any)
+	if !ok {
+		t.Fatal("Extensions field is not a map[string]any")
+	}
+
+	// Check the parquet_migrated flag was added
+	migratedFlag, exists := extensionsMap["parquet_migrated"]
+	if !exists {
+		t.Fatal("parquet_migrated flag not found in Extensions")
+	}
+
+	if migratedBool, ok := migratedFlag.(bool); !ok || !migratedBool {
+		t.Fatal("parquet_migrated flag should be true")
+	}
+
+	// Verify existing extensions are preserved
+	if extensionsMap["existing_key"] != "existing_value" {
+		t.Fatal("existing_key was not preserved")
+	}
+	if extensionsMap["number_key"] != float64(42) { // JSON numbers become float64
+		t.Fatal("number_key was not preserved")
+	}
 }
