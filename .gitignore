@@ -1,4 +1,26 @@
+# Binaries
 parquet-gateway
-.cover
-.blocks
-.data
+thanos-parquet-gateway
+
+# Build artifacts
+.build/
+.cover/
+.tarballs/
+
+# Local development
+VERSION
+
+# Test data
+.blocks/
+.data/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -4,6 +4,13 @@ FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
+# Version arguments for build-time injection
+ARG VERSION="unknown"
+ARG REVISION="unknown"
+ARG BRANCH="unknown"
+ARG BUILD_USER="docker"
+ARG BUILD_DATE="unknown"
+
 # Set working directory
 WORKDIR /app
 
@@ -16,8 +23,15 @@ RUN go mod download && go mod download -modfile=go.tools.mod
 # Copy source code
 COPY . .
 
-# Build the application with the same flags as in Makefile
-RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags stringlabels -o thanos-parquet-gateway ./cmd/
+# Build with version injection
+RUN PKG="github.com/thanos-io/thanos-parquet-gateway/pkg/version" && \
+    LDFLAGS="-s -w \
+    -X '${PKG}.Version=${VERSION}' \
+    -X '${PKG}.Revision=${REVISION}' \
+    -X '${PKG}.Branch=${BRANCH}' \
+    -X '${PKG}.BuildUser=${BUILD_USER}' \
+    -X '${PKG}.BuildDate=${BUILD_DATE}'" && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags stringlabels -ldflags="${LDFLAGS}" -o thanos-parquet-gateway ./cmd/
 
 # Final stage
 FROM alpine:latest
