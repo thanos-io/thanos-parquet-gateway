@@ -34,6 +34,7 @@ var logLevelMap = map[string]slog.Level{
 
 func main() {
 	app := kingpin.New("parquet-gateway", "parquet metrics experiments")
+	app.Version("v0.0.0-dev") // Add version information
 	memratio := app.Flag("memlimit.ratio", "gomemlimit ratio").Default("0.9").Float()
 	logLevel := app.Flag("logger.level", "log level").Default("INFO").Enum("DEBUG", "INFO", "WARN", "ERROR")
 

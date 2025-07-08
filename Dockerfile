@@ -20,7 +20,7 @@ COPY . .
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags stringlabels -o thanos-parquet-gateway ./cmd/
 
 # Final stage
-FROM --platform=linux/amd64 alpine:latest
+FROM alpine:latest
 
 # Install runtime dependencies
 RUN apk add --no-cache \
@@ -53,4 +53,4 @@ EXPOSE 6060 9090 9091
 
 # Default command
 ENTRYPOINT ["/usr/local/bin/thanos-parquet-gateway"]
-CMD ["serve", "--help"]
+CMD ["--help"]
