@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -559,7 +560,7 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
 		return
 	}
-	defer q.Close()
+	defer errcapture.Do(&err, q.Close, "query close")
 
 	var (
 		sets []storage.SeriesSet
@@ -600,6 +601,11 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 	writeSeriesResponse(w, series, annos)
 }
 
+var (
+	infMinTime = time.Unix(math.MinInt64/1000+62135596801, 0)
+	infMaxTime = time.Unix(math.MaxInt64/1000-62135596801, 999999999)
+)
+
 func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	span := tracing.SpanFromContext(ctx)
@@ -614,12 +620,13 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("invalid label name: %q", name)})
 	}
 
-	start, err := parseTimeParam(r, "start", time.Now())
+	// TODO(GiedriusS): add support for default time range.
+	start, err := parseTimeParam(r, "start", infMinTime)
 	if err != nil {
 		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
 		return
 	}
-	end, err := parseTimeParam(r, "end", time.Now())
+	end, err := parseTimeParam(r, "end", infMaxTime)
 	if err != nil {
 		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
 		return
@@ -704,12 +711,12 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	start, err := parseTimeParam(r, "start", time.Now())
+	start, err := parseTimeParam(r, "start", infMinTime)
 	if err != nil {
 		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
 		return
 	}
-	end, err := parseTimeParam(r, "end", time.Now())
+	end, err := parseTimeParam(r, "end", infMaxTime)
 	if err != nil {
 		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
 		return

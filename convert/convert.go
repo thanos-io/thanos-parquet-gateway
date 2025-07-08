@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/alecthomas/units"
+	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
@@ -133,7 +134,7 @@ func ConvertTSDBBlock(
 	day time.Time,
 	blks []Convertible,
 	opts ...ConvertOption,
-) error {
+) (rerr error) {
 	cfg := &convertOpts{
 		rowGroupSize:        1_000_000,
 		numRowGroups:        6,
@@ -160,7 +161,7 @@ func ConvertTSDBBlock(
 	if err != nil {
 		return fmt.Errorf("unable to create index rowreader: %w", err)
 	}
-	defer rr.Close()
+	defer errcapture.Do(&rerr, rr.Close, "index row reader close")
 
 	converter := newConverter(
 		name,
@@ -323,12 +324,12 @@ func (c *converter) optimizeShards(ctx context.Context) error {
 
 // Since we have to compute the schema from the whole TSDB Block it is highly likely that the
 // labels parquet file we wrote just now contains many empty columns - we project them away again
-func (c *converter) optimizeShard(ctx context.Context, i int) error {
+func (c *converter) optimizeShard(ctx context.Context, i int) (rerr error) {
 	rc, err := c.bkt.Get(ctx, schema.LabelsPfileNameForShard(c.name, i))
 	if err != nil {
 		return fmt.Errorf("unable to fetch labels parquet file: %w", err)
 	}
-	defer rc.Close()
+	defer errcapture.Do(&rerr, rc.Close, "labels parquet file close")
 
 	rbuf := bytes.NewBuffer(nil)
 	if _, err := io.Copy(rbuf, rc); err != nil {
@@ -353,7 +354,7 @@ func (c *converter) optimizeShard(ctx context.Context, i int) error {
 
 	for _, rg := range pf.RowGroups() {
 		rows := rg.Rows()
-		defer rows.Close()
+		defer errcapture.Do(&rerr, rows.Close, "labels parquet file row group close")
 
 		for {
 			n, err := rows.ReadRows(rowBuf)
@@ -387,10 +388,10 @@ func (c *converter) optimizeShard(ctx context.Context, i int) error {
 			}
 		}
 	}
+
 	if err := w.Close(); err != nil {
 		return fmt.Errorf("unable to close writer: %w", err)
 	}
-
 	if err := c.bkt.Upload(ctx, schema.LabelsPfileNameForShard(c.name, i), buf); err != nil {
 		return fmt.Errorf("unable to override optimized labels parquet file: %w", err)
 	}
@@ -398,7 +399,7 @@ func (c *converter) optimizeShard(ctx context.Context, i int) error {
 	return nil
 }
 
-func (c *converter) convertShard(ctx context.Context) (bool, error) {
+func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	s := c.rr.Schema()
 	rowsToWrite := c.numRowGroups * c.rowGroupSize
 
@@ -416,13 +417,11 @@ func (c *converter) convertShard(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("unable to build multifile writer: %w", err)
 	}
+	defer errcapture.Do(&rerr, w.Close, "multifile writer close")
 
 	n, err := parquet.CopyRows(w, newBufferedReader(ctx, newLimitReader(c.rr, rowsToWrite)))
 	if err != nil {
 		return false, fmt.Errorf("unable to copy rows to writer: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return false, fmt.Errorf("unable to close multifile writer: %w", err)
 	}
 
 	if n < int64(rowsToWrite) {
@@ -489,8 +488,9 @@ func newSplitFileWriter(ctx context.Context, bkt objstore.Bucket, inSchema *parq
 			w:    w,
 			conv: conv,
 		}
-		g.Go(func() error {
-			defer func() { _ = r.Close() }()
+		g.Go(func() (rerr error) {
+			defer errcapture.Do(&rerr, r.Close, "buffered writer flush")
+
 			return bkt.Upload(ctx, file, br)
 		})
 	}

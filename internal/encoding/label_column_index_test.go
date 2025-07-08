@@ -9,7 +9,12 @@ import (
 	"testing"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func FuzzEncodeLabelColumnIndex(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {

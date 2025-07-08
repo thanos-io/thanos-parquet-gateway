@@ -11,7 +11,12 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func buildFile[T any](t testing.TB, rows []T) *parquet.File {
 	buf := bytes.NewBuffer(nil)
