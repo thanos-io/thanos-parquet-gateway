@@ -33,6 +33,13 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
+const (
+	// ParquetMigratedExtensionKey is the key used in TSDB block metadata Extensions
+	// to indicate that the block has been migrated to Parquet format.
+	// TODO: Import this constant from Thanos when it becomes available in their metadata package.
+	ParquetMigratedExtensionKey = "parquet_migrated"
+)
+
 type Convertible interface {
 	Index() (tsdb.IndexReader, error)
 	Chunks() (tsdb.ChunkReader, error)
@@ -687,7 +694,7 @@ func markBlockAsMigrated(ctx context.Context, bkt objstore.Bucket, meta metadata
 	}
 
 	// Set the migrated flag
-	extensionsMap["parquet_migrated"] = true
+	extensionsMap[ParquetMigratedExtensionKey] = true
 
 	// Encode the updated metadata
 	var buf bytes.Buffer
