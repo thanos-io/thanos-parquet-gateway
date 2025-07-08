@@ -7,9 +7,6 @@ thanos-parquet-gateway
 .cover/
 .tarballs/
 
-# Local development
-VERSION
-
 # Test data
 .blocks/
 .data/
