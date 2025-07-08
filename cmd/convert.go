@@ -231,12 +231,27 @@ func advanceConversion(
 		if len(candidates) == 0 {
 			continue
 		}
+
+		// Get the metadata for blocks being converted for this date
+		candidateULIDs := make(map[string]bool)
+		for _, candidate := range candidates {
+			candidateULIDs[candidate.Meta().ULID.String()] = true
+		}
+
+		relevantMetas := make([]metadata.Meta, 0)
+		for _, meta := range plan.Download {
+			if candidateULIDs[meta.ULID.String()] {
+				relevantMetas = append(relevantMetas, meta)
+			}
+		}
+
 		convOpts := []convert.ConvertOption{
 			convert.SortBy(opts.sortLabels...),
 			convert.RowGroupSize(opts.rowGroupSize),
 			convert.RowGroupCount(opts.rowGroupCount),
 			convert.EncodingConcurrency(opts.encodingConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
+			convert.UpdateTSDBMeta(tsdbBkt, relevantMetas),
 		}
 		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, next, candidates, convOpts...); err != nil {
 			return fmt.Errorf("unable to convert blocks for date %q: %s", next, err)
