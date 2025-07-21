@@ -252,7 +252,6 @@ func TestUpdateTSDBBlockMetadata(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = bkt.Close() })
 
-	// Create a mock TSDB block metadata file
 	mockMeta := metadata.Meta{
 		BlockMeta: tsdb.BlockMeta{
 			ULID: ulid.MustNew(ulid.Now(), rand.Reader),
@@ -263,7 +262,6 @@ func TestUpdateTSDBBlockMetadata(t *testing.T) {
 		},
 	}
 
-	// Upload the initial meta.json file
 	metaPath := mockMeta.ULID.String() + "/meta.json"
 	var buf bytes.Buffer
 	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
@@ -275,13 +273,11 @@ func TestUpdateTSDBBlockMetadata(t *testing.T) {
 		t.Fatalf("unable to upload initial meta.json: %s", err)
 	}
 
-	// Call the function to update metadata
-	err = updateTSDBBlockMetadata(ctx, bkt, []metadata.Meta{mockMeta})
+	err = markBlockAsMigrated(ctx, bkt, mockMeta)
 	if err != nil {
 		t.Fatalf("unexpected error updating metadata: %s", err)
 	}
 
-	// Read back the updated meta.json file
 	rc, err := bkt.Get(ctx, metaPath)
 	if err != nil {
 		t.Fatalf("unable to get updated meta.json: %s", err)
@@ -293,7 +289,6 @@ func TestUpdateTSDBBlockMetadata(t *testing.T) {
 		t.Fatalf("unable to decode updated meta.json: %s", err)
 	}
 
-	// Verify the Extensions field was updated
 	if updatedMeta.Thanos.Extensions == nil {
 		t.Fatal("Extensions field is nil after update")
 	}
@@ -317,7 +312,6 @@ func TestUpdateTSDBBlockMetadata(t *testing.T) {
 		t.Fatal("parquet_migrated flag should be true")
 	}
 
-	// Verify other fields are preserved
 	if updatedMeta.ULID != mockMeta.ULID {
 		t.Fatal("ULID was not preserved")
 	}
@@ -354,7 +348,6 @@ func TestUpdateTSDBBlockMetadataWithExistingExtensions(t *testing.T) {
 		},
 	}
 
-	// Upload the initial meta.json file
 	metaPath := mockMeta.ULID.String() + "/meta.json"
 	var buf bytes.Buffer
 	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
@@ -366,13 +359,11 @@ func TestUpdateTSDBBlockMetadataWithExistingExtensions(t *testing.T) {
 		t.Fatalf("unable to upload initial meta.json: %s", err)
 	}
 
-	// Call the function to update metadata
-	err = updateTSDBBlockMetadata(ctx, bkt, []metadata.Meta{mockMeta})
+	err = markBlockAsMigrated(ctx, bkt, mockMeta)
 	if err != nil {
 		t.Fatalf("unexpected error updating metadata: %s", err)
 	}
 
-	// Read back the updated meta.json file
 	rc, err := bkt.Get(ctx, metaPath)
 	if err != nil {
 		t.Fatalf("unable to get updated meta.json: %s", err)
@@ -384,13 +375,11 @@ func TestUpdateTSDBBlockMetadataWithExistingExtensions(t *testing.T) {
 		t.Fatalf("unable to decode updated meta.json: %s", err)
 	}
 
-	// Verify the Extensions field was updated
 	extensionsMap, ok := updatedMeta.Thanos.Extensions.(map[string]any)
 	if !ok {
 		t.Fatal("Extensions field is not a map[string]any")
 	}
 
-	// Check the parquet_migrated flag was added
 	migratedFlag, exists := extensionsMap["parquet_migrated"]
 	if !exists {
 		t.Fatal("parquet_migrated flag not found in Extensions")
@@ -400,11 +389,10 @@ func TestUpdateTSDBBlockMetadataWithExistingExtensions(t *testing.T) {
 		t.Fatal("parquet_migrated flag should be true")
 	}
 
-	// Verify existing extensions are preserved
 	if extensionsMap["existing_key"] != "existing_value" {
 		t.Fatal("existing_key was not preserved")
 	}
-	if extensionsMap["number_key"] != float64(42) { // JSON numbers become float64
+	if extensionsMap["number_key"] != float64(42) {
 		t.Fatal("number_key was not preserved")
 	}
 }

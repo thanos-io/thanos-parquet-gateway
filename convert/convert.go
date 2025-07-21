@@ -61,7 +61,6 @@ type convertOpts struct {
 	labelPageBufferSize int
 	chunkPageBufferSize int
 
-	// updateTSDBMeta enables updating TSDB block metadata after successful conversion
 	updateTSDBMeta bool
 	tsdbBucket     objstore.Bucket
 	tsdbMetas      []metadata.Meta
@@ -206,10 +205,11 @@ func ConvertTSDBBlock(
 		return fmt.Errorf("unable to convert block: %w", err)
 	}
 
-	// Update TSDB block metadata to mark as migrated to Parquet
 	if cfg.updateTSDBMeta {
-		if err := updateTSDBBlockMetadata(ctx, cfg.tsdbBucket, cfg.tsdbMetas); err != nil {
-			return fmt.Errorf("unable to update TSDB metadata: %w", err)
+		for _, meta := range cfg.tsdbMetas {
+			if err := markBlockAsMigrated(ctx, cfg.tsdbBucket, meta); err != nil {
+				return fmt.Errorf("unable to mark block %s as migrated: %w", meta.ULID, err)
+			}
 		}
 	}
 
@@ -654,37 +654,24 @@ func (b *bufferedReader) readRows() {
 	}
 }
 
-// updateTSDBBlockMetadata updates the meta.json files of TSDB blocks to mark them as migrated to Parquet
-func updateTSDBBlockMetadata(ctx context.Context, bkt objstore.Bucket, metas []metadata.Meta) error {
-	for _, meta := range metas {
-		if err := markBlockAsMigrated(ctx, bkt, meta); err != nil {
-			return fmt.Errorf("unable to mark block %s as migrated: %w", meta.ULID, err)
-		}
-	}
-	return nil
-}
-
 // markBlockAsMigrated updates a single TSDB block's metadata to indicate it has been migrated to Parquet
-func markBlockAsMigrated(ctx context.Context, bkt objstore.Bucket, meta metadata.Meta) error {
+func markBlockAsMigrated(ctx context.Context, bkt objstore.Bucket, meta metadata.Meta) (rerr error) {
 	metaPath := meta.ULID.String() + "/meta.json"
 
-	// Read the existing meta.json file
 	rc, err := bkt.Get(ctx, metaPath)
 	if err != nil {
 		return fmt.Errorf("unable to get meta.json: %w", err)
 	}
-	defer rc.Close()
+	defer errcapture.ExhaustClose(&rerr, rc, "meta.json close")
 
 	var existingMeta metadata.Meta
 	if err := jsoniter.ConfigCompatibleWithStandardLibrary.NewDecoder(rc).Decode(&existingMeta); err != nil {
 		return fmt.Errorf("unable to decode meta.json: %w", err)
 	}
-	// Update the Extensions field to mark as migrated
 	if existingMeta.Thanos.Extensions == nil {
 		existingMeta.Thanos.Extensions = make(map[string]any)
 	}
 
-	// Check if Extensions is a map, if not initialize it
 	var extensionsMap map[string]any
 	if ext, ok := existingMeta.Thanos.Extensions.(map[string]any); ok {
 		extensionsMap = ext
@@ -693,18 +680,16 @@ func markBlockAsMigrated(ctx context.Context, bkt objstore.Bucket, meta metadata
 		existingMeta.Thanos.Extensions = extensionsMap
 	}
 
-	// Set the migrated flag
 	extensionsMap[ParquetMigratedExtensionKey] = true
 
-	// Encode the updated metadata
 	var buf bytes.Buffer
+
 	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
 	encoder.SetIndent("", "\t")
 	if err := encoder.Encode(&existingMeta); err != nil {
 		return fmt.Errorf("unable to encode meta.json: %w", err)
 	}
 
-	// Upload the updated meta.json
 	if err := bkt.Upload(ctx, metaPath, &buf); err != nil {
 		return fmt.Errorf("unable to upload meta.json: %w", err)
 	}
