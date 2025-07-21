@@ -17,18 +17,27 @@ import (
 
 	"github.com/alecthomas/units"
 	"github.com/efficientgo/core/errcapture"
+	jsoniter "github.com/json-iterator/go"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/tombstones"
 	"github.com/prometheus/prometheus/util/zeropool"
 	"github.com/thanos-io/objstore"
+	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
+)
+
+const (
+	// ParquetMigratedExtensionKey is the key used in TSDB block metadata Extensions
+	// to indicate that the block has been migrated to Parquet format.
+	// TODO: Import this constant from Thanos when it becomes available in their metadata package.
+	ParquetMigratedExtensionKey = "parquet_migrated"
 )
 
 type Convertible interface {
@@ -51,6 +60,10 @@ type convertOpts struct {
 
 	labelPageBufferSize int
 	chunkPageBufferSize int
+
+	updateTSDBMeta bool
+	tsdbBucket     objstore.Bucket
+	tsdbMetas      []metadata.Meta
 }
 
 func (cfg convertOpts) buildBloomfilterColumns() []parquet.BloomFilterColumn {
@@ -128,6 +141,15 @@ func EncodingConcurrency(c int) ConvertOption {
 	}
 }
 
+// UpdateTSDBMeta enables updating the original TSDB block metadata after successful conversion
+func UpdateTSDBMeta(tsdbBucket objstore.Bucket, tsdbMetas []metadata.Meta) ConvertOption {
+	return func(opts *convertOpts) {
+		opts.updateTSDBMeta = true
+		opts.tsdbBucket = tsdbBucket
+		opts.tsdbMetas = tsdbMetas
+	}
+}
+
 func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
@@ -181,6 +203,14 @@ func ConvertTSDBBlock(
 
 	if err := converter.convert(ctx); err != nil {
 		return fmt.Errorf("unable to convert block: %w", err)
+	}
+
+	if cfg.updateTSDBMeta {
+		for _, meta := range cfg.tsdbMetas {
+			if err := markBlockAsMigrated(ctx, cfg.tsdbBucket, meta); err != nil {
+				return fmt.Errorf("unable to mark block %s as migrated: %w", meta.ULID, err)
+			}
+		}
 	}
 
 	lastSuccessfulConvertTime.SetToCurrentTime()
@@ -622,4 +652,47 @@ func (b *bufferedReader) readRows() {
 			}
 		}
 	}
+}
+
+// markBlockAsMigrated updates a single TSDB block's metadata to indicate it has been migrated to Parquet
+func markBlockAsMigrated(ctx context.Context, bkt objstore.Bucket, meta metadata.Meta) (rerr error) {
+	metaPath := meta.ULID.String() + "/meta.json"
+
+	rc, err := bkt.Get(ctx, metaPath)
+	if err != nil {
+		return fmt.Errorf("unable to get meta.json: %w", err)
+	}
+	defer errcapture.ExhaustClose(&rerr, rc, "meta.json close")
+
+	var existingMeta metadata.Meta
+	if err := jsoniter.ConfigCompatibleWithStandardLibrary.NewDecoder(rc).Decode(&existingMeta); err != nil {
+		return fmt.Errorf("unable to decode meta.json: %w", err)
+	}
+	if existingMeta.Thanos.Extensions == nil {
+		existingMeta.Thanos.Extensions = make(map[string]any)
+	}
+
+	var extensionsMap map[string]any
+	if ext, ok := existingMeta.Thanos.Extensions.(map[string]any); ok {
+		extensionsMap = ext
+	} else {
+		extensionsMap = make(map[string]any)
+		existingMeta.Thanos.Extensions = extensionsMap
+	}
+
+	extensionsMap[ParquetMigratedExtensionKey] = true
+
+	var buf bytes.Buffer
+
+	encoder := jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(&buf)
+	encoder.SetIndent("", "\t")
+	if err := encoder.Encode(&existingMeta); err != nil {
+		return fmt.Errorf("unable to encode meta.json: %w", err)
+	}
+
+	if err := bkt.Upload(ctx, metaPath, &buf); err != nil {
+		return fmt.Errorf("unable to upload meta.json: %w", err)
+	}
+
+	return nil
 }
