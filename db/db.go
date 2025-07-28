@@ -220,6 +220,12 @@ func (q DBQuerier) Close() error {
 	return errors.Join(errs...)
 }
 
+// Blocks returns the underlying block queriers for direct access
+// This is used by the gRPC API to access SeriesChunks from individual shards
+func (q DBQuerier) Blocks() []storage.Querier {
+	return q.blocks
+}
+
 func (q DBQuerier) LabelValues(ctx context.Context, name string, hints *storage.LabelHints, matchers ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	var annos annotations.Annotations
 
