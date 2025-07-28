@@ -29,6 +29,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/search"
 )
 
 // Taken from https://github.com/thanos-community/thanos-promql-connector/blob/main/main.go
@@ -285,16 +286,6 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 }
 
 func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
-	if !request.SkipChunks {
-		return status.Error(codes.Unimplemented, "'series' called without skipping chunks")
-	}
-
-	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.MinTime, request.MaxTime)
-	if err != nil {
-		return status.Error(codes.Internal, err.Error())
-	}
-	defer errcapture.Do(&rerr, q.Close, "querier close")
-
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
@@ -306,6 +297,24 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 		Limit: int(request.Limit),
 		Func:  "series",
 	}
+
+	if request.SkipChunks {
+		return qs.seriesLabelsOnly(request, srv, ms, hints)
+	} else {
+		return qs.seriesWithChunks(request, srv, ms, hints)
+	}
+}
+
+// seriesLabelsOnly implements the original Series behavior for SkipChunks=true
+func (qs *QueryServer) seriesLabelsOnly(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer, ms []*labels.Matcher, hints *storage.SelectHints) error {
+	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.MinTime, request.MaxTime)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+	defer func() {
+		if err := q.Close(); err != nil {
+		}
+	}()
 
 	ss := q.Select(srv.Context(), true, hints, ms...)
 
@@ -341,6 +350,101 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	}
 
 	return nil
+}
+
+// seriesWithChunks implements the new Series behavior for SkipChunks=false
+func (qs *QueryServer) seriesWithChunks(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer, ms []*labels.Matcher, hints *storage.SelectHints) error {
+	chunkResponses, err := qs.getSeriesChunksFromShards(srv.Context(), request, ms, hints)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+
+	merger := NewLoserTreeChunkMerger(chunkResponses)
+	mergedSeries, err := merger.MergeToStorePB()
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+
+	i := int64(0)
+	for _, series := range mergedSeries {
+		i++
+
+		if request.Limit > 0 && i > request.Limit {
+			if err := srv.Send(storepb.NewWarnSeriesResponse(warnings.ErrorTruncatedResponse)); err != nil {
+				return status.Error(codes.Aborted, err.Error())
+			}
+			break
+		}
+
+		if err := srv.Send(storepb.NewSeriesResponse(series)); err != nil {
+			return status.Error(codes.Aborted, err.Error())
+		}
+	}
+
+	return nil
+}
+
+// getSeriesChunksFromShards retrieves raw SeriesChunks from all database shards
+func (qs *QueryServer) getSeriesChunksFromShards(ctx context.Context, request *storepb.SeriesRequest, ms []*labels.Matcher, hints *storage.SelectHints) ([]ChunkResponse, error) {
+	dbQuerier, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.MinTime, request.MaxTime)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create querier: %w", err)
+	}
+	defer func() {
+		if err := dbQuerier.Close(); err != nil {
+		}
+	}()
+
+	dbq, ok := dbQuerier.(*db.DBQuerier)
+	if !ok {
+		return nil, fmt.Errorf("unexpected querier type")
+	}
+
+	var allResponses []ChunkResponse
+	shardIndex := 0
+
+	for _, block := range dbq.Blocks() {
+		blockQuerier, ok := block.(*db.BlockQuerier)
+		if !ok {
+			continue
+		}
+
+		shards := blockQuerier.Shards()
+		for _, shard := range shards {
+			shardQuerier, ok := shard.(*db.ShardQuerier)
+			if !ok {
+				continue
+			}
+
+			seriesChunks, err := qs.getSeriesChunksFromShard(ctx, shardQuerier, ms, hints)
+			if err != nil {
+				return nil, fmt.Errorf("unable to get series chunks from shard %d: %w", shardIndex, err)
+			}
+
+			for _, sc := range seriesChunks {
+				allResponses = append(allResponses, ChunkResponse{
+					Series:     sc,
+					ShardIndex: shardIndex,
+				})
+			}
+
+			shardIndex++
+		}
+	}
+
+	return allResponses, nil
+}
+
+// getSeriesChunksFromShard extracts SeriesChunks directly from a single shard
+func (qs *QueryServer) getSeriesChunksFromShard(ctx context.Context, shardQuerier *db.ShardQuerier, ms []*labels.Matcher, hints *storage.SelectHints) ([]search.SeriesChunks, error) {
+	seriesChunks, warns, err := shardQuerier.SelectSeriesChunks(ctx, hints, ms...)
+	if err != nil {
+		return nil, err
+	}
+
+	_ = warns
+
+	return seriesChunks, nil
 }
 
 func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (_ *storepb.LabelNamesResponse, rerr error) {
