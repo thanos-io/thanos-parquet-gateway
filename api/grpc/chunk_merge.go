@@ -5,15 +5,12 @@
 package grpc
 
 import (
-	"container/heap"
-	"encoding/binary"
-
+	"github.com/bboreham/go-loser"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/thanos-io/thanos/pkg/store/labelpb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
 
-	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/search"
 )
 
@@ -23,70 +20,107 @@ type ChunkResponse struct {
 	ShardIndex int
 }
 
-// LoserTreeChunkMerger efficiently merges chunk responses from multiple shards
-// using a loser tree (min-heap) for optimal performance
-type LoserTreeChunkMerger struct {
+type ChunkSequence struct {
 	responses []ChunkResponse
-	heap      chunkResponseHeap
+	index     int
+}
+
+func (cs *ChunkSequence) Next() bool {
+	cs.index++
+	return cs.index < len(cs.responses)
+}
+
+func (cs *ChunkSequence) At() string {
+	if cs.index < 0 || cs.index >= len(cs.responses) {
+		return "\uffff"
+	}
+	return cs.responses[cs.index].Series.Lset.String()
+}
+
+func NewChunkSequence(responses []ChunkResponse) *ChunkSequence {
+	return &ChunkSequence{
+		responses: responses,
+		index:     -1,
+	}
+}
+
+// LoserTreeChunkMerger efficiently merges chunk responses from multiple shards
+type LoserTreeChunkMerger struct {
+	tree *loser.Tree[string, *ChunkSequence]
 }
 
 // NewLoserTreeChunkMerger creates a new merger for chunk responses
 func NewLoserTreeChunkMerger(responses []ChunkResponse) *LoserTreeChunkMerger {
-	merger := &LoserTreeChunkMerger{
-		responses: responses,
-		heap:      make(chunkResponseHeap, 0, len(responses)),
-	}
-
-	for i, resp := range responses {
-		if len(resp.Series.Chunks) > 0 {
-			merger.heap = append(merger.heap, &heapItem{
-				response: resp,
-				index:    i,
-			})
+	if len(responses) == 0 {
+		return &LoserTreeChunkMerger{
+			tree: nil,
 		}
 	}
-	heap.Init(&merger.heap)
 
-	return merger
+	sequences := make([]*ChunkSequence, len(responses))
+	for i, resp := range responses {
+		sequences[i] = NewChunkSequence([]ChunkResponse{resp})
+	}
+
+	tree := loser.New(sequences, "\uffff")
+
+	return &LoserTreeChunkMerger{
+		tree: tree,
+	}
 }
 
 // MergeToStorePB converts merged chunk responses to storepb.Series format
 func (m *LoserTreeChunkMerger) MergeToStorePB() ([]*storepb.Series, error) {
-	var result []*storepb.Series
+	if m.tree == nil || m.tree.IsEmpty() {
+		return []*storepb.Series{}, nil
+	}
 
-	for len(m.heap) > 0 {
-		current := heap.Pop(&m.heap).(*heapItem)
-		currentLabels := current.response.Series.Lset
+	seriesMap := make(map[string]*mergedSeries)
 
-		var sameLabelsResponses []*heapItem
-		sameLabelsResponses = append(sameLabelsResponses, current)
-
-		for len(m.heap) > 0 && labels.Equal(m.heap[0].response.Series.Lset, currentLabels) {
-			item := heap.Pop(&m.heap).(*heapItem)
-			sameLabelsResponses = append(sameLabelsResponses, item)
+	for !m.tree.IsEmpty() {
+		winnerSeq := m.tree.Winner()
+		if winnerSeq.index >= len(winnerSeq.responses) {
+			m.tree.Next()
+			continue
 		}
 
-		storeSeries, err := m.mergeChunksToStoreSeries(currentLabels, sameLabelsResponses)
+		current := winnerSeq.responses[winnerSeq.index].Series
+		labelKey := current.Lset.String()
+
+		if existing, ok := seriesMap[labelKey]; ok {
+			existing.chunks = append(existing.chunks, current.Chunks...)
+		} else {
+			seriesMap[labelKey] = &mergedSeries{
+				labels: current.Lset,
+				chunks: append([]chunks.Meta{}, current.Chunks...),
+			}
+		}
+
+		m.tree.Next()
+	}
+
+	result := make([]*storepb.Series, 0, len(seriesMap))
+	for _, merged := range seriesMap {
+		storeSeries, err := m.createStoreSeries(merged.labels, merged.chunks)
 		if err != nil {
 			return nil, err
 		}
-
 		result = append(result, storeSeries)
 	}
 
 	return result, nil
 }
 
-// mergeChunksToStoreSeries combines chunks from multiple shards into a single storepb.Series
-func (m *LoserTreeChunkMerger) mergeChunksToStoreSeries(lset labels.Labels, items []*heapItem) (*storepb.Series, error) {
+// mergedSeries holds a series with merged chunks from multiple shards
+type mergedSeries struct {
+	labels labels.Labels
+	chunks []chunks.Meta
+}
+
+func (m *LoserTreeChunkMerger) createStoreSeries(lset labels.Labels, chunkMetas []chunks.Meta) (*storepb.Series, error) {
 	storeLabels := labelpb.ZLabelSet{Labels: zLabelsFromMetric(lset)}
 
-	var allChunks []chunks.Meta
-	for _, item := range items {
-		allChunks = append(allChunks, item.response.Series.Chunks...)
-	}
-
-	storeChunks, err := m.chunksToStorePB(allChunks)
+	storeChunks, err := m.chunksToStorePB(chunkMetas)
 	if err != nil {
 		return nil, err
 	}
@@ -106,21 +140,15 @@ func (m *LoserTreeChunkMerger) chunksToStorePB(chunkMetas []chunks.Meta) ([]stor
 			continue
 		}
 
-		chkBytes := make([]byte, 0)
-		enc, bs := chunkMeta.Chunk.Encoding(), chunkMeta.Chunk.Bytes()
-
-		chkBytes = binary.BigEndian.AppendUint32(chkBytes, uint32(enc))
-		chkBytes = binary.BigEndian.AppendUint64(chkBytes, encoding.ZigZagEncode(chunkMeta.MinTime))
-		chkBytes = binary.BigEndian.AppendUint64(chkBytes, encoding.ZigZagEncode(chunkMeta.MaxTime))
-		chkBytes = binary.BigEndian.AppendUint32(chkBytes, uint32(len(bs)))
-		chkBytes = append(chkBytes, bs...)
+		enc := chunkMeta.Chunk.Encoding()
+		rawBytes := chunkMeta.Chunk.Bytes()
 
 		aggrChunk := storepb.AggrChunk{
 			MinTime: chunkMeta.MinTime,
 			MaxTime: chunkMeta.MaxTime,
 			Raw: &storepb.Chunk{
 				Type: storepb.Chunk_Encoding(enc),
-				Data: chkBytes,
+				Data: rawBytes,
 			},
 		}
 
@@ -128,33 +156,4 @@ func (m *LoserTreeChunkMerger) chunksToStorePB(chunkMetas []chunks.Meta) ([]stor
 	}
 
 	return result, nil
-}
-
-// heapItem represents an item in the loser tree heap
-type heapItem struct {
-	response ChunkResponse
-	index    int
-}
-
-// chunkResponseHeap implements heap.Interface for ChunkResponse
-type chunkResponseHeap []*heapItem
-
-func (h chunkResponseHeap) Len() int { return len(h) }
-
-func (h chunkResponseHeap) Less(i, j int) bool {
-	return labels.Compare(h[i].response.Series.Lset, h[j].response.Series.Lset) < 0
-}
-
-func (h chunkResponseHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-
-func (h *chunkResponseHeap) Push(x interface{}) {
-	*h = append(*h, x.(*heapItem))
-}
-
-func (h *chunkResponseHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
 }
