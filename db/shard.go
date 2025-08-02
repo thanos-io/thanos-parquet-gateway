@@ -241,6 +241,50 @@ func (q ShardQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.
 	return newWarningsSeriesSet(newConcatSeriesSet(series...), warns)
 }
 
+// SelectSeriesChunks returns raw SeriesChunks without converting to storage.Series
+// This is used by the gRPC API to access chunk data directly for efficient serialization
+func (q ShardQuerier) SelectSeriesChunks(ctx context.Context, hints *storage.SelectHints, matchers ...*labels.Matcher) ([]search.SeriesChunks, annotations.Annotations, error) {
+	ctx, span := tracing.Tracer().Start(ctx, "SelectSeriesChunks Shard")
+	defer span.End()
+
+	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("shard.replica_labels", q.replicaLabelNames))
+	span.SetAttributes(attribute.String("shard.external_labels", q.extlabels.String()))
+
+	queryableOperationsTotal.WithLabelValues(typeSelect, whereShard).Inc()
+
+	start := time.Now()
+	defer func() {
+		queryableOperationsDuration.WithLabelValues(typeSelect, whereShard).Observe(float64(time.Since(start).Seconds()))
+	}()
+
+	seriesChunks, warns, err := search.Select(
+		ctx,
+		search.SelectReadMeta{
+			Meta:                             q.shard.meta,
+			LabelPfile:                       q.shard.labelspfile,
+			ChunkPfile:                       q.shard.chunkspfile,
+			RowCountQuota:                    q.selectRowCountQuota,
+			ChunkBytesQuota:                  q.selectChunkBytesQuota,
+			ChunkPagePartitionMaxRange:       q.selectChunkPartitionMaxRange,
+			ChunkPagePartitionMaxGap:         q.selectChunkPartitionMaxGap,
+			ChunkPagePartitionMaxConcurrency: q.selectChunkPartitionMaxConcurrency,
+			ChunkFileReaderFromContext:       q.shard.chunkFileReaderFromCtx,
+			ExternalLabels:                   q.extlabels,
+			ReplicaLabelNames:                q.replicaLabelNames,
+		},
+		q.mint,
+		q.maxt,
+		hints,
+		matchers...,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to select: %w", err)
+	}
+
+	return seriesChunks, warns, nil
+}
+
 func (q ShardQuerier) seriesFromSeriesChunks(sc []search.SeriesChunks) ([]storage.Series, bool) {
 	res := make([]storage.Series, 0, len(sc))
 	m := make(map[uint64]struct{})
