@@ -130,10 +130,12 @@ func EncodingConcurrency(c int) ConvertOption {
 
 func ConvertTSDBBlock(
 	ctx context.Context,
+	externalLabelValue string,
 	bkt objstore.Bucket,
 	day time.Time,
 	blks []Convertible,
 	opts ...ConvertOption,
+
 ) (rerr error) {
 	cfg := &convertOpts{
 		rowGroupSize:        1_000_000,
@@ -150,7 +152,7 @@ func ConvertTSDBBlock(
 		opts[i](cfg)
 	}
 	start, end := util.BeginOfDay(day), util.EndOfDay(day)
-	name, err := schema.BlockNameForDay(start)
+	name, err := schema.BlockNameForDay(start, externalLabelValue)
 	if err != nil {
 		return fmt.Errorf("unable to get block name: %w", err)
 	}

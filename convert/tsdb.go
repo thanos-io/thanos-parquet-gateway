@@ -95,7 +95,7 @@ func newIndexRowReader(ctx context.Context, mint, maxt int64, blks []Convertible
 	}
 	slices.Sort(lbls)
 
-	cseriesSet := newMergeChunkSeriesSet(seriesSets, compareFunc, storage.NewConcatenatingChunkSeriesMerger())
+	cseriesSet := newMergeChunkSeriesSet(seriesSets, compareFunc, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge))
 	s := schema.BuildSchemaFromLabels(slices.Compact(lbls))
 
 	return &indexRowReader{

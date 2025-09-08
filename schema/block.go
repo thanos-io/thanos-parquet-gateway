@@ -7,6 +7,8 @@ package schema
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
@@ -25,19 +27,29 @@ type Meta struct {
 	ColumnsForName map[string][]string
 }
 
-func SplitBlockPath(name string) (string, string, bool) {
-	var (
-		year, month, day int
-		file             string
-	)
-	n, err := fmt.Sscanf(name, dateFormat+"/%s", &year, &month, &day, &file)
-	if err != nil {
+func SplitBlockPath(p string) (string, string, bool) {
+	parts := strings.Split(p, "/")
+	if len(parts) < 4 {
 		return "", "", false
 	}
-	if n != 4 {
+	// Validate date parts.
+	if _, err := strconv.Atoi(parts[0]); err != nil {
 		return "", "", false
 	}
-	return filepath.Dir(name), file, true
+	if _, err := strconv.Atoi(parts[1]); err != nil {
+		return "", "", false
+	}
+	if _, err := strconv.Atoi(parts[2]); err != nil {
+		return "", "", false
+	}
+
+	// Hashed form: yyyy/mm/dd/<hash>/<file>
+	if len(parts) >= 5 {
+		return filepath.Join(parts[0], parts[1], parts[2], parts[3]), parts[len(parts)-1], true
+	}
+
+	// Plain form: yyyy/mm/dd/<file>
+	return filepath.Join(parts[0], parts[1], parts[2]), parts[3], true
 }
 
 func DayFromBlockName(blk string) (time.Time, error) {
@@ -55,7 +67,7 @@ func DayFromBlockName(blk string) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), nil
 }
 
-func BlockNameForDay(t time.Time) (string, error) {
+func BlockNameForDay(t time.Time, externalLabelValue string) (string, error) {
 	if t.Location() != time.UTC {
 		return "", fmt.Errorf("block start time %s must be in UTC", t)
 	}
@@ -63,7 +75,12 @@ func BlockNameForDay(t time.Time) (string, error) {
 		return "", fmt.Errorf("block start time %s must be aligned to a day", t)
 	}
 	year, month, day := t.Date()
-	return fmt.Sprintf(dateFormat, year, int(month), day), nil
+	if externalLabelValue == "" {
+		// Use the original format if no external label is provided
+		return fmt.Sprintf(dateFormat, year, int(month), day), nil
+	}
+	// Include the hashed label in the block name
+	return fmt.Sprintf(dateFormat, year, int(month), day) + "/" + externalLabelValue, nil
 }
 
 func LabelsPfileNameForShard(name string, shard int) string {
