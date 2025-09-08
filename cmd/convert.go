@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -87,6 +89,7 @@ func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("parquet.storage.s3.access_key", "access key for s3").Default("").Envar("PARQUET_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("parquet.storage.s3.secret_key", "secret key for s3").Default("").Envar("PARQUET_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("parquet.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("parquet.storage.s3.aws-sdk-auth", "use AWS SDK authentication").Default("false").BoolVar(&opts.AWSSDKAuth)
 }
 
 func (opts *bucketOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
@@ -98,6 +101,7 @@ func (opts *bucketOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("tsdb.storage.s3.access_key", "access key for s3").Default("").Envar("TSDB_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("tsdb.storage.s3.secret_key", "secret key for s3").Default("").Envar("TSDB_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("tsdb.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("tsdb.storage.s3.aws-sdk-auth", "use AWS SDK authentication").Default("false").BoolVar(&opts.AWSSDKAuth)
 }
 
 func (opts *discoveryOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
@@ -146,6 +150,25 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 		if err != nil {
 			return fmt.Errorf("unable to setup parquet discovery: %s", err)
 		}
+		var externalLabelValue string
+
+		// Check if externalLabelMatchers exists and is not empty
+		if len(opts.tsdbDiscover.externalLabelMatchers) > 0 {
+			for _, matcher := range opts.tsdbDiscover.externalLabelMatchers {
+				externalLabelValue = matcher.Value // Grab the first value
+				break                              // Exit after the first key-value pair
+			}
+		}
+
+		if externalLabelValue != "" {
+			// Hash the label value
+			hasher := sha256.New()
+			hasher.Write([]byte(externalLabelValue))
+			externalLabelValue = hex.EncodeToString(hasher.Sum(nil)) // Convert hash to a hex string
+			log.Info("Using hashed external label value", "hashed_label", externalLabelValue)
+		} else {
+			log.Warn("No external label value found, using original block name format")
+		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -162,7 +185,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 						return err
 					}
 					log.Info("Converting next blocks", "sort_by", opts.conversion.sortLabels)
-					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion); err != nil {
+					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion, externalLabelValue); err != nil {
 						log.Error("Unable to convert blocks", "error", err)
 						return err
 					}
@@ -189,6 +212,7 @@ func advanceConversion(
 	tsdbDiscoverer *locate.TSDBDiscoverer,
 	parquetDiscoverer *locate.Discoverer,
 	opts conversionOpts,
+	externalLabelValue string,
 ) error {
 	blkDir := filepath.Join(opts.tempDir, ".blocks")
 	bufferDir := filepath.Join(opts.tempDir, ".buffers")
@@ -238,7 +262,7 @@ func advanceConversion(
 			convert.EncodingConcurrency(opts.encodingConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
-		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, next, candidates, convOpts...); err != nil {
+		if err := convert.ConvertTSDBBlock(ctx, externalLabelValue, parquetBkt, next, candidates, convOpts...); err != nil {
 			return fmt.Errorf("unable to convert blocks for date %q: %s", next, err)
 		}
 	}
