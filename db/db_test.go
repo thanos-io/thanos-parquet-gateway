@@ -50,9 +50,6 @@ func TestPromQLAcceptance(t *testing.T) {
 		t.Skip("Skipping, because 'short' flag was set")
 	}
 
-	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
-
 	st := &testHelper{
 		skipTests: []string{
 			"testdata/name_label_dropping.test", // feature unsupported in promql-engine
@@ -60,6 +57,7 @@ func TestPromQLAcceptance(t *testing.T) {
 		TBRun: t,
 	}
 
+	engine := promqltest.NewTestEngine(t, true, 5*time.Minute, 1e10)
 	promqltest.RunBuiltinTestsWithStorage(st, engine, func(tt testutil.T) storage.Storage {
 		return &acceptanceTestStorage{tb: t, st: teststorage.New(tt)}
 	})

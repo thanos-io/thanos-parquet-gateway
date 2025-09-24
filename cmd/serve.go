@@ -22,6 +22,7 @@ import (
 	"github.com/prometheus/prometheus/promql"
 
 	"github.com/thanos-io/promql-engine/engine"
+	"github.com/thanos-io/promql-engine/logicalplan"
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/info/infopb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
@@ -36,6 +37,7 @@ import (
 	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
 	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
 	cfdb "github.com/thanos-io/thanos-parquet-gateway/db"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type serveOpts struct {
@@ -194,6 +196,10 @@ type queryOpts struct {
 func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 	return engine.New(engine.Opts{
 		DisableDuplicateLabelChecks: true,
+		LogicalOptimizers: []logicalplan.Optimizer{
+			&logicalplan.ProjectionOptimizer{SeriesHashLabel: schema.SeriesHashLabel},
+		},
+
 		EngineOpts: promql.EngineOpts{
 			Logger:                   nil,
 			Reg:                      nil,

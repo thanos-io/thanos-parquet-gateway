@@ -64,7 +64,7 @@ func materializeSeries(
 	g, ctx := errgroup.WithContext(ctx)
 
 	g.Go(func() error {
-		sLbls, err := materializeLabels(ctx, m, rgi, rr)
+		sLbls, err := materializeLabels(ctx, hints, m, rgi, rr)
 		if err != nil {
 			return fmt.Errorf("error materializing labels: %w", err)
 		}
@@ -105,12 +105,12 @@ func materializeSeries(
 	return res, annos, nil
 }
 
-func materializeLabels(ctx context.Context, m SelectReadMeta, rgi int, rr []rowRange) ([]labels.Builder, error) {
+func materializeLabels(ctx context.Context, h *storage.SelectHints, m SelectReadMeta, rgi int, rr []rowRange) ([]labels.Builder, error) {
 	switch v := m.Meta.Version; v {
 	case schema.V0:
 		return materializeLabelsV0(ctx, m, rgi, rr)
 	case schema.V1, schema.V2:
-		return materializeLabelsV1(ctx, m, rgi, rr)
+		return materializeLabelsV1(ctx, h, m, rgi, rr)
 	default:
 		return nil, fmt.Errorf("unable to materialize labels for block of version %q", v)
 	}
@@ -118,6 +118,8 @@ func materializeLabels(ctx context.Context, m SelectReadMeta, rgi int, rr []rowR
 
 // v0 blocks have a map to resolve column names for a metric
 func materializeLabelsV0(ctx context.Context, m SelectReadMeta, rgi int, rr []rowRange) ([]labels.Builder, error) {
+	// NOTE: v0 blocks did not have a labelhash column so we dont need to worry about projections
+
 	rowCount := totalRows(rr)
 
 	metricNameColumn := schema.LabelNameToColumn(labels.MetricName)
@@ -187,48 +189,95 @@ func materializeLabelsV0(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 	return builders, nil
 }
 
-// v1 blocks have a cf_meta_index column that contains an index which columns to resolve for a metric
-func materializeLabelsV1(ctx context.Context, m SelectReadMeta, rgi int, rr []rowRange) ([]labels.Builder, error) {
+// v1+ blocks have a cf_meta_index column that contains an index which columns to resolve for a metric
+func materializeLabelsV1(ctx context.Context, h *storage.SelectHints, m SelectReadMeta, rgi int, rr []rowRange) ([]labels.Builder, error) {
+	// TODO: refactor this maybe? interleaving "useProjections" with normal materialization is a bit ugly...
+
 	rowCount := totalRows(rr)
+	s := m.LabelPfile.Schema()
 
-	lc, ok := m.LabelPfile.Schema().Lookup(schema.LabelIndexColumn)
-	if !ok {
-		return nil, fmt.Errorf("unable to to find label index column %q", schema.LabelIndexColumn)
-	}
+	// We only use projections for inclusive cases, as in we know what labels to add, not
+	// what labels to take away. We also only use them if the shards we use for the query
+	// all support them.
+	useProjections := m.HonorProjectionHints && h.ProjectionInclude
 
-	rg := m.LabelPfile.RowGroups()[rgi]
+	lrg := m.LabelPfile.RowGroups()[rgi]
+	crg := m.ChunkPfile.RowGroups()[rgi]
 
-	cc := rg.ColumnChunks()[lc.ColumnIndex]
-	colsIdxs, err := materializeLabelColumn(ctx, rg, cc, rr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to materialize label index column: %w", err)
-	}
-
-	seen := make(map[string]struct{})
 	colsMap := make(map[int]*[]parquet.Value, 10)
-	for _, colsIdx := range colsIdxs {
-		key := yoloString(colsIdx.ByteArray())
-		if _, ok := seen[key]; !ok {
-			idxs, err := encoding.DecodeLabelColumnIndex(colsIdx.ByteArray())
-			if err != nil {
-				return nil, fmt.Errorf("unable to decode column index: %w", err)
+	if useProjections {
+		for _, labelName := range h.ProjectionLabels {
+			col, ok := s.Lookup(schema.LabelNameToColumn(labelName))
+			if !ok {
+				// we asked to aggregate by a label that does not exist, we can just ignore it
+				continue
 			}
-			for _, idx := range idxs {
-				colsMap[idx] = &[]parquet.Value{}
+			colsMap[col.ColumnIndex] = &[]parquet.Value{}
+		}
+	} else {
+		lc, ok := s.Lookup(schema.LabelIndexColumn)
+		if !ok {
+			return nil, fmt.Errorf("unable to to find label index column %q", schema.LabelIndexColumn)
+		}
+		cci := lc.ColumnIndex
+		cc := lrg.ColumnChunks()[cci]
+
+		colsIdxs, err := materializeLabelColumn(ctx, lrg, cc, rr)
+		if err != nil {
+			return nil, fmt.Errorf("unable to materialize label index column: %w", err)
+		}
+
+		seen := make(map[string]struct{})
+		for _, colsIdx := range colsIdxs {
+			key := yoloString(colsIdx.ByteArray())
+			if _, ok := seen[key]; !ok {
+				idxs, err := encoding.DecodeLabelColumnIndex(colsIdx.ByteArray())
+				if err != nil {
+					return nil, fmt.Errorf("unable to decode column index: %w", err)
+				}
+				for _, idx := range idxs {
+					colsMap[idx] = &[]parquet.Value{}
+				}
+				seen[key] = struct{}{}
 			}
-			seen[key] = struct{}{}
 		}
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
-	for cIdx, v := range colsMap {
+	for cci, v := range colsMap {
 		g.Go(func() error {
-			cc := rg.ColumnChunks()[cIdx]
-			values, err := materializeLabelColumn(ctx, rg, cc, rr)
+			cc := lrg.ColumnChunks()[cci]
+			values, err := materializeLabelColumn(ctx, lrg, cc, rr)
 			if err != nil {
 				return fmt.Errorf("unable to materialize labels values: %w", err)
 			}
 			*v = values
+			return nil
+		})
+	}
+
+	var hashes []parquet.Value
+	if useProjections {
+		g.Go(func() error {
+			// NOTE: label hash is persisted into the chunk file because its a bigger column
+			col, ok := m.ChunkPfile.Schema().Lookup(schema.LabelHashColumn)
+			if !ok {
+				return fmt.Errorf("unable to to find label hash column %q", schema.LabelHashColumn)
+			}
+			cci := col.ColumnIndex
+			cc := crg.ColumnChunks()[cci]
+
+			h, err := materializeChunkColumn(
+				ctx,
+				crg,
+				cc,
+				rr,
+				withReaderFromContext(m.ChunkFileReaderFromContext),
+			)
+			if err != nil {
+				return fmt.Errorf("unable to materialize hash values: %w", err)
+			}
+			hashes = h
 			return nil
 		})
 	}
@@ -238,8 +287,8 @@ func materializeLabelsV1(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 	}
 
 	builders := make([]labels.Builder, rowCount)
-	for cIdx, values := range colsMap {
-		colName := m.LabelPfile.Schema().Columns()[cIdx][0]
+	for cci, values := range colsMap {
+		colName := s.Columns()[cci][0]
 		labelName := schema.ColumnToLabelName(colName)
 
 		for i, value := range *values {
@@ -247,6 +296,12 @@ func materializeLabelsV1(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 				continue
 			}
 			builders[i].Set(labelName, yoloString(value.ByteArray()))
+		}
+	}
+
+	if useProjections {
+		for i := range hashes {
+			builders[i].Set(schema.SeriesHashLabel, yoloString(hashes[i].Bytes()))
 		}
 	}
 	return builders, nil

@@ -18,21 +18,38 @@ type hints struct {
 	By       bool
 	Func     string
 	Grouping []string
+
+	ProjectionLabels  []string
+	ProjectionInclude bool
 }
 
 func fromStorageHints(h *storage.SelectHints) hints {
-	clone := make([]string, len(h.Grouping))
-	copy(clone, h.Grouping)
+	grouping := make([]string, len(h.Grouping))
+	copy(grouping, h.Grouping)
+
+	projections := make([]string, len(h.ProjectionLabels))
+	copy(projections, h.ProjectionLabels)
+
 	return hints{
-		Limit:    h.Limit,
-		Func:     h.Func,
-		By:       h.By,
-		Grouping: clone,
+		Limit:             h.Limit,
+		Func:              h.Func,
+		By:                h.By,
+		Grouping:          grouping,
+		ProjectionLabels:  projections,
+		ProjectionInclude: h.ProjectionInclude,
 	}
 }
 
 func toStorageHints(h hints) *storage.SelectHints {
-	return &storage.SelectHints{Limit: h.Limit, Func: h.Func, By: h.By, Grouping: h.Grouping}
+	return &storage.SelectHints{
+		Limit:             h.Limit,
+		Func:              h.Func,
+		By:                h.By,
+		Grouping:          h.Grouping,
+		ProjectionLabels:  h.ProjectionLabels,
+		ProjectionInclude: h.ProjectionInclude,
+	}
+
 }
 
 type selectFn func(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.SeriesSet

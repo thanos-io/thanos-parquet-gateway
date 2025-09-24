@@ -55,6 +55,7 @@ func (shd *Shard) Queryable(
 	selectChunkPartitionMaxRange uint64,
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
+	selectHonorProjectionHints bool,
 ) storage.Queryable {
 	return &ShardQueryable{
 		extlabels:                          extlabels,
@@ -64,6 +65,7 @@ func (shd *Shard) Queryable(
 		selectChunkPartitionMaxRange:       selectChunkPartitionMaxRange,
 		selectChunkPartitionMaxGap:         selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: selectChunkPartitionMaxConcurrency,
+		selectHonorProjectionHints:         selectHonorProjectionHints,
 		shard:                              shd,
 	}
 }
@@ -76,6 +78,7 @@ type ShardQueryable struct {
 	selectChunkPartitionMaxRange       uint64
 	selectChunkPartitionMaxGap         uint64
 	selectChunkPartitionMaxConcurrency int
+	selectHonorProjectionHints         bool
 
 	shard *Shard
 }
@@ -92,6 +95,7 @@ func (q *ShardQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 		selectChunkPartitionMaxRange:       q.selectChunkPartitionMaxRange,
 		selectChunkPartitionMaxGap:         q.selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: q.selectChunkPartitionMaxConcurrency,
+		selectHonorProjectionHints:         q.selectHonorProjectionHints,
 	}, nil
 }
 
@@ -104,6 +108,7 @@ type ShardQuerier struct {
 	selectChunkPartitionMaxRange       uint64
 	selectChunkPartitionMaxGap         uint64
 	selectChunkPartitionMaxConcurrency int
+	selectHonorProjectionHints         bool
 
 	shard *Shard
 }
@@ -218,6 +223,7 @@ func (q ShardQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.
 			ChunkPagePartitionMaxGap:         q.selectChunkPartitionMaxGap,
 			ChunkPagePartitionMaxConcurrency: q.selectChunkPartitionMaxConcurrency,
 			ChunkFileReaderFromContext:       q.shard.chunkFileReaderFromCtx,
+			HonorProjectionHints:             q.selectHonorProjectionHints,
 			ExternalLabels:                   q.extlabels,
 			ReplicaLabelNames:                q.replicaLabelNames,
 		},
