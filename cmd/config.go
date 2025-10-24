@@ -57,6 +57,7 @@ type bucketOpts struct {
 	s3AccessKey string
 	s3SecretKey string
 	s3Insecure  bool
+	AWSSDKAuth  bool
 
 	retries int
 }
@@ -83,6 +84,7 @@ func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 			SecretKey  string `yaml:"secret_key"`
 			MaxRetries int    `yaml:"max_retries"`
 			Insecure   bool   `yaml:"insecure"`
+			AWSSDKAuth bool   `yaml:"aws_sdk_auth"`
 		}{
 			Bucket:     opts.s3Bucket,
 			Endpoint:   opts.s3Endpoint,
@@ -90,6 +92,7 @@ func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 			SecretKey:  opts.s3SecretKey,
 			Insecure:   opts.s3Insecure,
 			MaxRetries: opts.retries,
+			AWSSDKAuth: opts.AWSSDKAuth,
 		}
 	default:
 		return nil, fmt.Errorf("unknown bucket type: %s", prov)

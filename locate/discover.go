@@ -115,7 +115,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 		var wg sync.WaitGroup
 		defer wg.Wait()
 
-		for range s.concurrency {
+		for i := 0; i < s.concurrency; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -126,7 +126,10 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 					} else {
 						metaC <- metaOrError{m: meta}
 					}
+					meta.Name = k
+					metaC <- metaOrError{m: meta}
 				}
+
 			}()
 		}
 	}()
@@ -163,7 +166,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 		mint, maxt := int64(math.MaxInt64), int64(math.MinInt64)
 		for _, v := range s.metas {
 			mint = min(mint, v.Mint)
-			maxt = max(maxt, v.Mint)
+			maxt = max(maxt, v.Maxt)
 		}
 		syncMinTime.WithLabelValues(whatDiscoverer).Set(float64(mint))
 		syncMaxTime.WithLabelValues(whatDiscoverer).Set(float64(maxt))

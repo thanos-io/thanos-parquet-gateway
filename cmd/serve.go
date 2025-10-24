@@ -71,6 +71,7 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("storage.s3.access_key", "access key for s3").Default("").Envar("STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("storage.s3.secret_key", "secret key for s3").Default("").Envar("STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("storage.s3.aws-sdk-auth", "use AWS SDK authentication").Default("false").BoolVar(&opts.AWSSDKAuth)
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {
