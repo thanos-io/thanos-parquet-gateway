@@ -37,13 +37,13 @@ func main() {
 	memratio := app.Flag("memlimit.ratio", "gomemlimit ratio").Default("0.9").Float()
 	logLevel := app.Flag("logger.level", "log level").Default("INFO").Enum("DEBUG", "INFO", "WARN", "ERROR")
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevelMap[*logLevel],
-	}))
-
 	tsdbConvert, tsdbConvertF := registerConvertApp(app)
 	serve, serveF := registerServeApp(app)
 	parsed := kingpin.MustParse(app.Parse(os.Args[1:]))
+
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: logLevelMap[*logLevel],
+	}))
 
 	memlimit.SetGoMemLimitWithOpts(
 		memlimit.WithRatio(*memratio),
