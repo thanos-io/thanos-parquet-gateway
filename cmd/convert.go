@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/oklog/run"
@@ -44,13 +45,14 @@ type conversionOpts struct {
 	runTimeout    time.Duration
 	retryInterval time.Duration
 
-	gracePeriod         time.Duration
-	recompress          bool
-	sortLabels          []string
-	rowGroupSize        int
-	rowGroupCount       int
-	downloadConcurrency int
-	encodingConcurrency int
+	gracePeriod              time.Duration
+	recompress               bool
+	sortLabels               []string
+	rowGroupSize             int
+	rowGroupCount            int
+	downloadConcurrency      int
+	blockDownloadConcurrency int
+	encodingConcurrency      int
 
 	tempDir string
 }
@@ -74,7 +76,8 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
 	cmd.Flag("convert.sorting.label", "label to sort by").Default("__name__").StringsVar(&opts.sortLabels)
-	cmd.Flag("convert.download.concurrency", "concurrency for downloading tsdb blocks").Default("4").IntVar(&opts.downloadConcurrency)
+	cmd.Flag("convert.download.concurrency", "concurrency for downloading files in parallel per tsdb block").Default("4").IntVar(&opts.downloadConcurrency)
+	cmd.Flag("convert.download.block-concurrency", "concurrency for downloading & opening multiple blocks in parallel").Default("1").IntVar(&opts.blockDownloadConcurrency)
 	cmd.Flag("convert.encoding.concurrency", "concurrency for encoding chunks").Default("4").IntVar(&opts.encodingConcurrency)
 }
 
@@ -212,7 +215,7 @@ func advanceConversion(
 	log.Info("Converting dates", "dates", plan.ConvertForDates)
 
 	log.Info("Opening blocks", "ulids", ulidsFromMetas(plan.Download))
-	tsdbBlocks, err := downloadedBlocks(ctx, tsdbBkt, plan.Download, blkDir, opts)
+	tsdbBlocks, err := downloadedBlocks(ctx, log, tsdbBkt, plan.Download, blkDir, opts)
 	defer func() {
 		for _, blk := range tsdbBlocks {
 			if cErr := blk.(io.Closer).Close(); cErr != nil {
@@ -279,24 +282,39 @@ func ulidsFromMetas(metas []metadata.Meta) []string {
 	return res
 }
 
-func downloadedBlocks(ctx context.Context, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
-	slogger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(opts.blockDownloadConcurrency)
 
+	mu := sync.Mutex{}
 	res := make([]convert.Convertible, 0)
 	for _, m := range metas {
-		src := m.ULID.String()
-		dst := filepath.Join(blkDir, src)
+		g.Go(func() error {
+			src := m.ULID.String()
+			dst := filepath.Join(blkDir, src)
 
-		if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
-			return downloadBlock(ctx, bkt, m, blkDir, opts)
-		}); err != nil {
-			return res, fmt.Errorf("unable to download block %q: %w", src, err)
-		}
-		blk, err := tsdb.OpenBlock(slogger, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
-		if err != nil {
-			return res, fmt.Errorf("unable to open block %q: %w", m.ULID, err)
-		}
-		res = append(res, blk)
+			log.Debug("block download start", "ulid", src)
+
+			if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
+				return downloadBlock(ctx, bkt, m, blkDir, opts)
+			}); err != nil {
+				return fmt.Errorf("unable to download block %q: %w", src, err)
+			}
+			blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
+			if err != nil {
+				return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
+			}
+			mu.Lock()
+			res = append(res, blk)
+			mu.Unlock()
+
+			log.Debug("block download complete", "ulid", src)
+			return nil
+
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return res, err
 	}
 	return res, nil
 }
