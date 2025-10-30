@@ -55,15 +55,9 @@ func DayFromBlockName(blk string) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), nil
 }
 
-func BlockNameForDay(t time.Time) (string, error) {
-	if t.Location() != time.UTC {
-		return "", fmt.Errorf("block start time %s must be in UTC", t)
-	}
-	if !t.Equal(util.BeginOfDay(t)) {
-		return "", fmt.Errorf("block start time %s must be aligned to a day", t)
-	}
-	year, month, day := t.Date()
-	return fmt.Sprintf(dateFormat, year, int(month), day), nil
+func BlockNameForDay(d util.Date) string {
+	year, month, day := d.ToTime().Date()
+	return fmt.Sprintf(dateFormat, year, int(month), day)
 }
 
 func LabelsPfileNameForShard(name string, shard int) string {

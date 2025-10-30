@@ -41,7 +41,7 @@ func TestDiscoverer(t *testing.T) {
 		}
 		discoverer := NewDiscoverer(bkt)
 
-		d := util.BeginOfDay(time.UnixMilli(0)).UTC()
+		d := util.NewDate(1970, time.January, 1)
 		if err := createBlockForDay(ctx, tt, bkt, d); err != nil {
 			tt.Fatalf("unable to create block for day: %s", err)
 		}
@@ -56,7 +56,7 @@ func TestDiscoverer(t *testing.T) {
 		}
 
 		// Add another block
-		d = util.BeginOfDay(time.UnixMilli(0).AddDate(0, 0, 1)).UTC()
+		d = util.NewDate(1970, time.January, 2)
 		if err := createBlockForDay(ctx, tt, bkt, d); err != nil {
 			tt.Fatalf("unable to create block for day: %s", err)
 		}
@@ -207,18 +207,18 @@ func TestTSDBDiscoverer(t *testing.T) {
 	})
 }
 
-func createBlockForDay(ctx context.Context, t *testing.T, bkt objstore.Bucket, d time.Time) error {
+func createBlockForDay(ctx context.Context, t *testing.T, bkt objstore.Bucket, d util.Date) error {
 	st := teststorage.New(t)
 	t.Cleanup(func() { _ = st.Close() })
 
 	app := st.Appender(ctx)
-	app.Append(0, labels.FromStrings("foo", "bar"), d.UnixMilli(), 1)
+	app.Append(0, labels.FromStrings("foo", "bar"), d.MinT(), 1)
 	if err := app.Commit(); err != nil {
 		return fmt.Errorf("unable to commit samples: %s", err)
 	}
 
 	h := st.Head()
-	if err := convert.ConvertTSDBBlock(ctx, bkt, d, []convert.Convertible{h}); err != nil {
+	if err := convert.ConvertTSDBBlock(ctx, bkt, d, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
 		return fmt.Errorf("unable to convert blocks: %s", err)
 	}
 	return nil

@@ -5,38 +5,50 @@
 package util
 
 import (
-	"fmt"
 	"time"
 )
 
-func SplitDays(start time.Time, end time.Time) ([]time.Time, error) {
-	if !alignsToStartOfDay(start) {
-		return nil, fmt.Errorf("start %q needs to align to start of day", start)
+func NewDate(y int, m time.Month, d int) Date {
+	return Date{
+		t: time.Date(y, m, d, 0, 0, 0, 0, time.UTC),
 	}
-	if !alignsToStartOfDay(end) {
-		return nil, fmt.Errorf("end %q needs to align to start of day", end)
-	}
-	res := make([]time.Time, 0)
-
-	cur := start
-	res = append(res, cur.UTC())
-	for cur != end {
-		cur = cur.AddDate(0, 0, 1)
-		res = append(res, cur.UTC())
-	}
-
-	return res, nil
 }
 
-func BeginOfDay(t time.Time) time.Time {
-	year, month, day := t.Date()
-	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+type Date struct {
+	t time.Time
 }
 
-func EndOfDay(t time.Time) time.Time {
-	return BeginOfDay(t).AddDate(0, 0, 1)
+func (d Date) String() string {
+	return d.t.Format(time.DateOnly)
 }
 
-func alignsToStartOfDay(t time.Time) bool {
-	return t.Equal(BeginOfDay(t))
+func (d Date) ToTime() time.Time {
+	return d.t
+}
+
+func (d Date) MinT() int64 {
+	return d.t.UnixMilli()
+}
+
+func (d Date) MaxT() int64 {
+	return d.t.AddDate(0, 0, 1).UnixMilli()
+}
+
+func nextDay(t time.Time) time.Time {
+	t = t.AddDate(0, 0, 1)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func SplitIntoDates(mint, maxt int64) []Date {
+	start := time.UnixMilli(mint).UTC()
+	end := time.UnixMilli(maxt).UTC()
+	res := []Date{}
+	for {
+		res = append(res, NewDate(start.Year(), start.Month(), start.Day()))
+		start = nextDay(start)
+		if !start.Before(end) {
+			break
+		}
+	}
+	return res
 }

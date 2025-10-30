@@ -60,7 +60,8 @@ func TestConverter(t *testing.T) {
 	}
 
 	h := st.Head()
-	d := util.BeginOfDay(time.UnixMilli(h.MinTime())).UTC()
+	ts := time.UnixMilli(h.MinTime()).UTC()
+	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
 	opts := []ConvertOption{
 		SortBy(labels.MetricName),
@@ -68,7 +69,7 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{h}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 

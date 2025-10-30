@@ -28,6 +28,7 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/db"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 )
@@ -1354,8 +1355,10 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ctx := context.Background()
 
 	h := st.DB.Head()
-	day := time.UnixMilli(h.MinTime()).UTC()
-	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{h}); err != nil {
+	ts := time.UnixMilli(h.MinTime()).UTC()
+	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
 		tb.Fatal(err)
 	}
 
