@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -36,6 +35,17 @@ type Convertible interface {
 	Chunks() (tsdb.ChunkReader, error)
 	Tombstones() (tombstones.Reader, error)
 	Meta() tsdb.BlockMeta
+	Dir() string
+	Close() error
+}
+
+// This is mostly used for testing when using tsdb.Head as Convertible.
+type HeadBlock struct {
+	*tsdb.Head
+}
+
+func (hb *HeadBlock) Dir() string {
+	return ""
 }
 
 type convertOpts struct {
@@ -131,7 +141,7 @@ func EncodingConcurrency(c int) ConvertOption {
 func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
-	day time.Time,
+	day util.Date,
 	blks []Convertible,
 	opts ...ConvertOption,
 ) (rerr error) {
@@ -149,12 +159,9 @@ func ConvertTSDBBlock(
 	for i := range opts {
 		opts[i](cfg)
 	}
-	start, end := util.BeginOfDay(day), util.EndOfDay(day)
-	name, err := schema.BlockNameForDay(start)
-	if err != nil {
-		return fmt.Errorf("unable to get block name: %w", err)
-	}
-	rr, err := newIndexRowReader(ctx, start.UnixMilli(), end.UnixMilli(), blks, indexReaderOpts{
+	start, end := day.MinT(), day.MaxT()
+	name := schema.BlockNameForDay(day)
+	rr, err := newIndexRowReader(ctx, start, end, blks, indexReaderOpts{
 		sortLabels:  cfg.sortLabels,
 		concurrency: cfg.encodingConcurrency,
 	})
@@ -165,8 +172,8 @@ func ConvertTSDBBlock(
 
 	converter := newConverter(
 		name,
-		start.UnixMilli(),
-		end.UnixMilli(),
+		start,
+		end,
 		rr,
 		bkt,
 		cfg.rowGroupSize,

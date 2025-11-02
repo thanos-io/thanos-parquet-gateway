@@ -8,26 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/goleak"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 )
-
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
-}
 
 func TestBlockNameForDay(t *testing.T) {
 	t.Run("", func(t *testing.T) {
-		d := time.Unix(10, 0).UTC()
-		if _, err := BlockNameForDay(d); err == nil {
-			t.Fatal("expected error, got none")
-		}
-	})
-	t.Run("", func(t *testing.T) {
-		d := time.Unix(0, 0).UTC()
-		b, err := BlockNameForDay(d)
-		if err != nil {
-			t.Fatal("unexpected error: ", err)
-		}
+		b := BlockNameForDay(util.NewDate(1970, time.January, 1))
 		want := "1970/01/01"
 		got := b
 		if want != got {
@@ -35,11 +21,7 @@ func TestBlockNameForDay(t *testing.T) {
 		}
 	})
 	t.Run("", func(t *testing.T) {
-		d := time.Unix(1732320000, 0).UTC()
-		b, err := BlockNameForDay(d)
-		if err != nil {
-			t.Fatal("unexpected error: ", err)
-		}
+		b := BlockNameForDay(util.NewDate(2024, time.November, 23))
 		want := "2024/11/23"
 		got := b
 		if want != got {

@@ -5,103 +5,176 @@
 package convert
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"time"
-
-	"github.com/thanos-io/thanos/pkg/block/metadata"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
+	"github.com/thanos-io/thanos/pkg/block/metadata"
 )
 
+type Step struct {
+	Date    util.Date       // Date for which we are building a parquet block.
+	Sources []metadata.Meta // Source TSDB blocks we will use to generate a parquet block.
+}
+
+// isFullyCovered returns true if blocks for this date cover the whole day.
+// We return true even if there are gaps in coverage, we only care that there
+// are blocks that cover both min and max timestamps.
+func (s Step) isFullyCovered() bool {
+	mint := s.Date.MinT()
+	maxt := s.Date.MaxT()
+	var gotMin, gotMax bool
+	for _, s := range s.Sources {
+		if s.MinTime <= mint {
+			gotMin = true
+		}
+		if s.MaxTime >= maxt {
+			gotMax = true
+		}
+	}
+	return gotMin && gotMax
+}
+
 type Plan struct {
-	Download        []metadata.Meta
-	ConvertForDates []time.Time
+	Steps []Step
 }
 
 type Planner struct {
-	// do not create parquet blocks that are younger then this
+	// Do not create parquet blocks that are younger then this.
 	notAfter time.Time
+	// Maximum number of days to plan conversions for. Planner might still produce a plan with more days
+	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
+	// for the next plan.
+	maxDays int
 }
 
-func NewPlanner(notAfter time.Time) Planner {
-	return Planner{notAfter: notAfter}
+func NewPlanner(notAfter time.Time, maxDays int) Planner {
+	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) (Plan, bool) {
-	var start, end time.Time
-
-	for _, v := range tsdbMetas {
-		bStart, bEnd := time.UnixMilli(v.MinTime).UTC(), time.UnixMilli(v.MaxTime).UTC()
-		if start.IsZero() || bStart.Before(start) {
-			start = bStart
-		}
-		if end.IsZero() || bEnd.After(end) {
-			end = bEnd
+func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	// Make a list of days covered by TSDB blocks.
+	tsdbDates := map[util.Date][]metadata.Meta{}
+	for _, tsdb := range tsdbMetas {
+		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
 
-	start, end = util.BeginOfDay(start), util.BeginOfDay(end)
+	// Make a list of days covered by parquet blocks.
+	pqDates := map[util.Date]struct{}{}
+	for _, pq := range parquetMetas {
+		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+			pqDates[partialDate] = struct{}{}
+		}
+	}
 
-	var first time.Time
+	// Find TSDB dates not covered by parquet dates.
+	steps := make([]Step, 0, len(tsdbDates))
+	for date, metas := range tsdbDates {
+		if !date.ToTime().Before(p.notAfter) {
+			// Ignore TSDB blocks that are for dates excluded from conversions.
+			continue
+		}
 
-	// find first block not covered by parquetMetas
-L:
-	for next := start.UTC(); !next.After(end); next = next.AddDate(0, 0, 1).UTC() {
-		for _, m := range parquetMetas {
-			if next.Equal(time.UnixMilli(m.Mint)) {
-				// we already cover this day
-				continue L
+		if _, ok := pqDates[date]; ok {
+			// This date is already covered by a parquet block.
+			continue
+		}
+
+		// Sort our tsdb block metas from oldest to the newest.
+		slices.SortFunc(metas, func(a, b metadata.Meta) int {
+			return cmp.Compare(a.MinTime, b.MinTime)
+		})
+
+		steps = append(steps, Step{
+			Date:    date,
+			Sources: metas,
+		})
+	}
+
+	// Sort our days, most recent first.
+	slices.SortFunc(steps, func(a, b Step) int {
+		return cmp.Compare(b.Date.MinT(), a.Date.MinT())
+	})
+
+	// Remove the most recent day if it's not fully covered by TSDB blocks.
+	// We do this because we might get some delayed blocks for it.
+	// Any gaps in days older than the most recent one are ignored.
+	steps = truncateLastPartialDay(steps)
+
+	// Restrict our plan to have only up to maxDays number of steps.
+	// But allow more steps if they come from TSDB blocks that are only on the plan.
+	steps = limitSteps(steps, p.maxDays)
+
+	return Plan{Steps: steps}
+}
+
+// Get rid of the most recent day if we don't have TSDB blocks for the whole day.
+func truncateLastPartialDay(steps []Step) []Step {
+	// Empty source, return it as is.
+	if len(steps) < 1 {
+		return steps
+	}
+	// Most recent day is NOT fully covered, return all but most recent day.
+	if !steps[0].isFullyCovered() {
+		return steps[1:]
+	}
+	// Return as is.
+	return steps
+}
+
+// Limit the plan to specified max number of days.
+// This is a soft limit, final plan might have more days if it makes sense.
+func limitSteps(steps []Step, limit int) []Step {
+	if len(steps) <= limit {
+		// Plan is <= the limit, return it as is.
+		return steps
+	}
+
+	metas := MergeMetas(steps[:limit])
+	for i := limit; i < len(steps); i++ {
+		// Loop over all excess days and check if they would require a new block.
+		// If yes then exclude them from the plan.
+		// If no then keep them on the plan.
+		var newBlock bool
+		for _, meta := range steps[i].Sources {
+			if !slices.ContainsFunc(metas, func(m metadata.Meta) bool {
+				return meta.ULID == m.ULID
+			}) {
+				newBlock = true
 			}
 		}
-		first = next
-		break
-	}
-
-	if first.IsZero() || first.After(p.notAfter) {
-		return Plan{}, false
-	}
-
-	overlappingMetas := overlappingBlockMetas(tsdbMetas, first)
-	if len(overlappingMetas) == 0 {
-		return Plan{}, false
-	}
-	last := util.BeginOfDay(time.UnixMilli(overlappingMetas[len(overlappingMetas)-1].MaxTime).UTC())
-
-	convertForDays := make([]time.Time, 0)
-	convertForDays = append(convertForDays, first)
-
-	if !first.Equal(last) {
-		for next := first.AddDate(0, 0, 1).UTC(); !next.Equal(last); next = next.AddDate(0, 0, 1).UTC() {
-			convertForDays = append(convertForDays, next)
+		if newBlock {
+			break
 		}
-	} else if last.Equal(end) {
-		// if we only convert one date and if that date is the end of the range that our TSDB
-		// blocks cover fully - we just wait for more data, it could be that we get more data later
-		// for this day.
-		return Plan{}, false
+		limit = i + 1
 	}
 
-	// NOTE: if the metas cover more time, then we could amortize downloads by just converting all
-	// dates the cover here. Think for example blocks in object storage that were compacted to two
-	// weeks. We should only do this for full days that are covered by the downloaded blocks though.
-	// We should also only consider dates that are not covered by parquet files already.
-
-	return Plan{
-		Download:        overlappingMetas,
-		ConvertForDates: convertForDays,
-	}, true
+	return steps[:limit]
 }
 
-func overlappingBlockMetas(metas map[string]metadata.Meta, date time.Time) []metadata.Meta {
-	res := make([]metadata.Meta, 0)
-	for _, m := range metas {
-		if date.AddDate(0, 0, 1).UnixMilli() >= m.MinTime && date.UnixMilli() <= m.MaxTime {
-			res = append(res, m)
+// Merge dates from all steps into a single slice.
+func MergeDates(steps []Step) []util.Date {
+	dates := make([]util.Date, 0, len(steps))
+	for _, step := range steps {
+		dates = append(dates, step.Date)
+	}
+	return dates
+}
+
+// Merge TSDB block metas from all steps into a single slice.
+func MergeMetas(steps []Step) (metas []metadata.Meta) {
+	for _, step := range steps {
+		for _, m := range step.Sources {
+			if !slices.ContainsFunc(metas, func(meta metadata.Meta) bool {
+				return meta.ULID == m.ULID
+			}) {
+				metas = append(metas, m)
+			}
 		}
 	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].MaxTime <= res[j].MaxTime
-	})
-	return res
+	return metas
 }

@@ -46,6 +46,7 @@ type conversionOpts struct {
 	retryInterval time.Duration
 
 	gracePeriod              time.Duration
+	maxDays                  int
 	recompress               bool
 	sortLabels               []string
 	rowGroupSize             int
@@ -73,6 +74,8 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.tempdir", "directory for temporary state").Default(os.TempDir()).StringVar(&opts.tempDir)
 	cmd.Flag("convert.recompress", "recompress chunks").Default("true").BoolVar(&opts.recompress)
 	cmd.Flag("convert.grace-period", "dont convert for dates younger than this").Default("48h").DurationVar(&opts.gracePeriod)
+	cmd.Flag("convert.max-plan-days", "soft limit for the number of days to plan conversions for").Default("2").IntVar(&opts.maxDays)
+
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
 	cmd.Flag("convert.sorting.label", "label to sort by").Default("__name__").StringsVar(&opts.sortLabels)
@@ -207,33 +210,56 @@ func advanceConversion(
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
 
-	plan, ok := convert.NewPlanner(time.Now().Add(-opts.gracePeriod)).Plan(tsdbMetas, parquetMetas)
-	if !ok {
+	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
 	}
-	log.Info("Converting dates", "dates", plan.ConvertForDates)
-
-	log.Info("Opening blocks", "ulids", ulidsFromMetas(plan.Download))
-	tsdbBlocks, err := downloadedBlocks(ctx, log, tsdbBkt, plan.Download, blkDir, opts)
-	defer func() {
-		for _, blk := range tsdbBlocks {
-			if cErr := blk.(io.Closer).Close(); cErr != nil {
-				log.Warn("Unable to close block", "block", blk.Meta().ULID, "err", cErr)
-			}
-		}
-	}()
-	if err != nil {
-		return fmt.Errorf("unable to download tsdb blocks: %w", err)
+	log.Info("Planned dates to convert", slog.Int("days", len(plan.Steps)))
+	for _, step := range plan.Steps {
+		log.Info("Plan step", slog.String("date", step.Date.String()), slog.Any("ulids", ulidsFromMetas(step.Sources)))
 	}
 
-	for _, next := range plan.ConvertForDates {
-		log.Info("Converting next parquet file", "day", next)
+	log.Info("Starting plan conversions")
+	var (
+		stepBlocks, prevBlocks []convert.Convertible
+		err                    error
+	)
+	// Process each step (day) one by one, keeping blocks shared between steps on disk.
+	for _, step := range plan.Steps {
+		// Close blocks that were open in the previous step but are no longer needed.
+		prevBlocks = closeUnused(log, step.Sources, prevBlocks)
 
-		candidates := overlappingBlocks(tsdbBlocks, next)
-		if len(candidates) == 0 {
-			continue
+		ulids := ulidsFromMetas(step.Sources)
+		log.Info("Converting date", slog.String("date", step.Date.String()), slog.Any("ulids", ulids))
+
+		toDownload := blocksToDownload(step.Sources, prevBlocks)
+		log.Info("Blocks from previous step", slog.Any("ulids", ulidsFromConvertible(prevBlocks)))
+		log.Info("Blocks to download", slog.Any("ulids", ulidsFromMetas(toDownload)))
+		stepBlocks, err = downloadedBlocks(ctx, log, tsdbBkt, toDownload, blkDir, opts)
+		if err != nil {
+			// NOTE: we might have managed to open a few blocks, make sure to close them too.
+			closeBlocks(log, prevBlocks...)
+			closeBlocks(log, stepBlocks...)
+			return fmt.Errorf("unable to download tsdb blocks: %w", err)
 		}
+		log.Info("Blocks downloaded", slog.Int("count", len(stepBlocks)))
+		// So far stepBlocks is only blocks we needed to download, add blocks already downloaded in previous step.
+		stepBlocks = append(stepBlocks, prevBlocks...)
+
+		for _, blk := range stepBlocks {
+			meta := blk.Meta()
+			log.Info("TSDB block details",
+				slog.String("ulid", meta.ULID.String()),
+				slog.String("minTime", time.UnixMilli(meta.MinTime).UTC().Format(time.RFC3339)),
+				slog.String("maxTime", time.UnixMilli(meta.MaxTime).UTC().Format(time.RFC3339)),
+				slog.Uint64("series", meta.Stats.NumSeries),
+				slog.Uint64("chunks", meta.Stats.NumChunks),
+				slog.Uint64("samples", meta.Stats.NumSamples),
+			)
+		}
+
+		log.Info("Starting conversion", slog.String("date", step.Date.String()))
 		convOpts := []convert.ConvertOption{
 			convert.SortBy(opts.sortLabels...),
 			convert.RowGroupSize(opts.rowGroupSize),
@@ -241,11 +267,68 @@ func advanceConversion(
 			convert.EncodingConcurrency(opts.encodingConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
-		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, next, candidates, convOpts...); err != nil {
-			return fmt.Errorf("unable to convert blocks for date %q: %s", next, err)
+		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
+			closeBlocks(log, stepBlocks...)
+			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
+		}
+		log.Info("Conversion completed", slog.String("date", step.Date.String()))
+
+		prevBlocks = stepBlocks
+	}
+	log.Info("Plan completed")
+
+	// Close all open blocks.
+	closeBlocks(log, prevBlocks...)
+	return nil
+}
+
+func closeBlocks(log *slog.Logger, openBlocks ...convert.Convertible) {
+	for _, blk := range openBlocks {
+		log.Info("Closing open block", slog.String("ulid", blk.Meta().ULID.String()))
+		if err := blk.Close(); err != nil {
+			log.Warn("Unable to close block", slog.String("block", blk.Meta().ULID.String()), slog.Any("err", err))
+		}
+
+		log.Info("Removing block directory", slog.String("block", blk.Meta().ULID.String()), slog.String("dir", blk.Dir()))
+		if err := os.RemoveAll(blk.Dir()); err != nil {
+			log.Warn("Unable to remove block directory", slog.String("block", blk.Meta().ULID.String()), slog.Any("err", err))
 		}
 	}
-	return nil
+}
+
+// closeUnused takes the list of TSDB metas used to convert given step and a list of already
+// open blocks, it will look for blocks that are no longer needed, close them, and then return
+// the list of blocks that are still used.
+func closeUnused(log *slog.Logger, metas []metadata.Meta, openBlocks []convert.Convertible) []convert.Convertible {
+	used := make([]convert.Convertible, 0, len(openBlocks))
+L:
+	for _, openBlock := range openBlocks {
+		for _, meta := range metas {
+			if meta.ULID == openBlock.Meta().ULID {
+				used = append(used, openBlock)
+				continue L
+			}
+		}
+		log.Info("Block no longer needed, closing", slog.String("block", openBlock.Meta().ULID.String()))
+		closeBlocks(log, openBlock)
+	}
+	return used
+}
+
+// blocksToDownload takes the list of TSDB metas used to convert given step and a list of already
+// open blocks and returns a list of blocks that need downloading.
+func blocksToDownload(metas []metadata.Meta, openBlocks []convert.Convertible) []metadata.Meta {
+	pending := make([]metadata.Meta, 0, len(metas))
+L:
+	for _, meta := range metas {
+		for _, openBlock := range openBlocks {
+			if meta.ULID == openBlock.Meta().ULID {
+				continue L
+			}
+		}
+		pending = append(pending, meta)
+	}
+	return pending
 }
 
 func cleanupDirectory(dir string) error {
@@ -278,6 +361,14 @@ func ulidsFromMetas(metas []metadata.Meta) []string {
 	res := make([]string, len(metas))
 	for i := range metas {
 		res[i] = metas[i].ULID.String()
+	}
+	return res
+}
+
+func ulidsFromConvertible(blocks []convert.Convertible) []string {
+	res := make([]string, len(blocks))
+	for i := range blocks {
+		res[i] = blocks[i].Meta().ULID.String()
 	}
 	return res
 }

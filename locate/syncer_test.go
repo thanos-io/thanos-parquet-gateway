@@ -25,7 +25,7 @@ func TestSyncer(t *testing.T) {
 		}
 		syncer := NewSyncer(bkt)
 
-		d := util.BeginOfDay(time.UnixMilli(0)).UTC()
+		d := util.NewDate(1970, time.January, 1)
 		if err := createBlockForDay(ctx, tt, bkt, d); err != nil {
 			tt.Fatalf("unable to create block for day: %s", err)
 		}
@@ -34,8 +34,8 @@ func TestSyncer(t *testing.T) {
 			"1970/01/01": {
 				Version: schema.V1,
 				Name:    "1970/01/01",
-				Mint:    d.UnixMilli(),
-				Maxt:    d.AddDate(0, 0, 1).UnixMilli(),
+				Mint:    d.MinT(),
+				Maxt:    d.MaxT(),
 				Shards:  1,
 			},
 		}
