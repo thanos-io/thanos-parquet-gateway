@@ -22,6 +22,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/pkg/version"
 	"github.com/thanos-io/thanos-parquet-gateway/search"
 )
 
@@ -34,6 +35,7 @@ var logLevelMap = map[string]slog.Level{
 
 func main() {
 	app := kingpin.New("parquet-gateway", "parquet metrics experiments")
+	app.Version(version.Print()) // Use proper version information
 	memratio := app.Flag("memlimit.ratio", "gomemlimit ratio").Default("0.9").Float()
 	logLevel := app.Flag("logger.level", "log level").Default("INFO").Enum("DEBUG", "INFO", "WARN", "ERROR")
 
