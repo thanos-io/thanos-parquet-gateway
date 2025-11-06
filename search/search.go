@@ -59,6 +59,10 @@ type SelectReadMeta struct {
 	// Thanos labels processing hints
 	ExternalLabels    labels.Labels
 	ReplicaLabelNames []string
+
+	// We can only project if all blocks that the query touches have precomputed
+	// series hashes. This is checked by the DBQueryable before.
+	HonorProjectionHints bool
 }
 
 func Select(

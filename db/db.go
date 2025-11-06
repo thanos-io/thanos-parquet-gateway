@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 
 	"github.com/alecthomas/units"
@@ -22,6 +23,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 // DB is a horizontal partitioning of multiple non-overlapping blocks that are
@@ -178,12 +180,27 @@ type DBQueryable struct {
 }
 
 func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
-	qs := make([]storage.Querier, 0, len(db.blocks))
+	bs := make([]*Block, 0, len(db.blocks))
+
 	for _, blk := range db.blocks {
 		bmint, bmaxt := blk.Timerange()
 		if !util.Intersects(mint, maxt, bmint, bmaxt) {
 			continue
 		}
+		bs = append(bs, blk)
+	}
+
+	// We can honor projections if all blocks that participate in the query
+	// are at least V2. We introduced a labels-hash column in V2 which is
+	// required to be able to still horizontally join series.
+	honorProjections := !slices.ContainsFunc(bs, func(blk *Block) bool {
+		return blk.Meta().Version < schema.V2
+	})
+
+	qs := make([]storage.Querier, 0, len(db.blocks))
+	for _, blk := range bs {
+		bmint, bmaxt := blk.Timerange()
+
 		start, end := util.Intersection(mint, maxt, bmint, bmaxt)
 		q, err := blk.Queryable(
 			db.extLabels,
@@ -193,6 +210,7 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 			db.selectChunkPartitionMaxRange,
 			db.selectChunkPartitionMaxGap,
 			db.selectChunkPartitionMaxConcurrency,
+			honorProjections,
 		).Querier(start, end)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get block querier: %w", err)

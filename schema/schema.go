@@ -15,6 +15,13 @@ import (
 )
 
 const (
+	// This label gets added when we honor projections, it is used so we can still perform
+	// horizontal merges of series sets even when we dont load all labels. It is also used
+	// in the query engine for similar purposes, i.e. binary joins when we dont load all labels.
+	SeriesHashLabel = "__cf_series_hash__"
+)
+
+const (
 	LabelColumnPrefix = "___cf_meta_label_"
 	LabelIndexColumn  = "___cf_meta_index"
 	LabelHashColumn   = "___cf_meta_hash"

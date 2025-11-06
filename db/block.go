@@ -49,6 +49,7 @@ func (blk *Block) Queryable(
 	selectChunkPartitionMaxRange uint64,
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
+	selectHonorProjectionHints bool,
 ) storage.Queryable {
 	qs := make([]storage.Queryable, 0, len(blk.shards))
 	for _, shard := range blk.shards {
@@ -60,6 +61,7 @@ func (blk *Block) Queryable(
 			selectChunkPartitionMaxRange,
 			selectChunkPartitionMaxGap,
 			selectChunkPartitionMaxConcurrency,
+			selectHonorProjectionHints,
 		))
 	}
 	return &BlockQueryable{extlabels: extlabels, shards: qs}
