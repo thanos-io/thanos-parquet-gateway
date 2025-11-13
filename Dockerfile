@@ -16,5 +16,5 @@ RUN adduser \
     thanos && \
     chown thanos /bin/thanos-parquet-gateway
 USER 1001
-ENTRYPOINT [ "/bin/thanos" ]
+ENTRYPOINT [ "/bin/thanos-parquet-gateway" ]
 
