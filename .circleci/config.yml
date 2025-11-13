@@ -105,8 +105,6 @@ workflows:
   thanos-parquet-gateway:
     jobs:
       - publish_main:
-          requires:
-            - test
           filters:
             branches:
               only: main
