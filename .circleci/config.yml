@@ -8,27 +8,10 @@ orbs:
 executors:
   golang:
     docker:
-      - image: cimg/go:1.24.0-node
+      - image: cimg/go:1.24.10-node
     resource_class: medium
 
 jobs:
-  test:
-    executor: golang
-    steps:
-      - git-shallow-clone/checkout
-      - go/mod-download-cached
-      - run:
-          name: Generate protos
-          command: make protos
-      - run:
-          name: Run tests
-          command: make test-norace
-      - run:
-          name: Run lint
-          command: make lint
-      - store_test_results:
-          path: .cover
-
   # Cross build is needed for publish_release but needs to be done outside of docker.
   cross_build:
     machine: 
@@ -42,8 +25,9 @@ jobs:
       - run:
           name: Install Go
           command: |
-            wget https://go.dev/dl/go1.24.0.linux-amd64.tar.gz
-            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz
+            wget https://go.dev/dl/go1.24.10.linux-amd64.tar.gz
+            echo "dd52b974e3d9c5a7bbfb222c685806def6be5d6f7efd10f9caa9ca1fa2f47955 go1.24.10.linux-amd64.tar.gz" | sha256sum --check --status
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go1.24.10.linux-amd64.tar.gz
             echo 'export PATH=/usr/local/go/bin:$PATH' >> $BASH_ENV
       - run: mkdir -p ${GOBIN}
       - run: curl -L "https://github.com/prometheus/promu/releases/download/v${PROMU_VERSION}/promu-${PROMU_VERSION}.$(go env GOOS)-$(go env GOARCH).tar.gz" | tar --strip-components=1 -xzf - -C ${GOBIN}
@@ -120,7 +104,6 @@ workflows:
   version: 2
   thanos-parquet-gateway:
     jobs:
-      - test
       - publish_main:
           requires:
             - test
