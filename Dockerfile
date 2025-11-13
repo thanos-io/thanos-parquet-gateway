@@ -1,70 +1,20 @@
-# Build stage
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
+# By default we pin to amd64 sha. Use make docker to automatically adjust for arm64 versions.
+ARG BASE_DOCKER_SHA="97a9aacc097e5dbdec33b0d671adea0785e76d26ff2b979ee28570baf6a9155d"
 
-ARG TARGETOS
-ARG TARGETARCH
+FROM quay.io/prometheus/busybox@sha256:${BASE_DOCKER_SHA}
+LABEL maintainer="The Thanos Authors"
 
-# Version arguments for build-time injection
-ARG VERSION="unknown"
-ARG REVISION="unknown"
-ARG BRANCH="unknown"
-ARG BUILD_USER="docker"
-ARG BUILD_DATE="unknown"
+ARG ARCH="amd64"
+ARG OS="linux"
 
-# Set working directory
-WORKDIR /app
+COPY .build/${OS}-${ARCH}/thanos-parquet-gateway /bin/thanos-parquet-gateway
 
-# Copy go mod files first for better caching
-COPY go.mod go.sum go.tools.mod go.tools.sum ./
+RUN adduser \
+    -D `#Dont assign a password` \
+    -H `#Dont create home directory` \
+    -u 1001 `#User id`\
+    thanos && \
+    chown thanos /bin/thanos-parquet-gateway
+USER 1001
+ENTRYPOINT [ "/bin/thanos" ]
 
-# Download dependencies
-RUN go mod download && go mod download -modfile=go.tools.mod
-
-# Copy source code
-COPY . .
-
-# Build with version injection
-RUN PKG="github.com/thanos-io/thanos-parquet-gateway/pkg/version" && \
-    LDFLAGS="-s -w \
-    -X '${PKG}.Version=${VERSION}' \
-    -X '${PKG}.Revision=${REVISION}' \
-    -X '${PKG}.Branch=${BRANCH}' \
-    -X '${PKG}.BuildUser=${BUILD_USER}' \
-    -X '${PKG}.BuildDate=${BUILD_DATE}'" && \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags stringlabels -ldflags="${LDFLAGS}" -o thanos-parquet-gateway ./cmd/
-
-# Final stage
-FROM alpine:latest
-
-# Install runtime dependencies
-RUN apk add --no-cache \
-    ca-certificates
-
-# Create non-root user
-RUN addgroup -g 1001 -S thanos && \
-    adduser -u 1001 -S thanos -G thanos
-
-# Create data directory
-RUN mkdir -p /data && chown -R thanos:thanos /data
-
-# Copy the binary from builder stage
-COPY --from=builder /app/thanos-parquet-gateway /usr/local/bin/thanos-parquet-gateway
-
-# Make binary executable
-RUN chmod +x /usr/local/bin/thanos-parquet-gateway
-
-# Switch to non-root user
-USER thanos
-
-# Set working directory
-WORKDIR /data
-
-# Expose ports (based on the README example)
-# 6060: internal metrics and readiness
-# 9090: Prometheus HTTP API
-# 9091: Thanos gRPC services
-EXPOSE 6060 9090 9091
-
-# Default command
-ENTRYPOINT ["/usr/local/bin/thanos-parquet-gateway"]
-CMD ["--help"]

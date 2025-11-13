@@ -7,7 +7,6 @@
 
 # Build artifacts
 parquet-gateway
-.build
 .tarballs
 .cover
 

@@ -14,6 +14,38 @@ DOCKER_CI_TAG ?= $(shell git rev-parse --short HEAD)
 DOCKER_PLATFORM ?= linux/amd64,linux/arm64
 DOCKER_BUILDX_BUILDER ?= multi-arch-builder
 
+DOCKER_ARCHS       ?= amd64 arm64 ppc64le
+# Generate three targets: docker-xxx-amd64, docker-xxx-arm64, docker-xxx-ppc64le.
+# Run make docker-xxx -n to see the result with dry run.
+BUILD_DOCKER_ARCHS = $(addprefix docker-build-,$(DOCKER_ARCHS))
+TEST_DOCKER_ARCHS  = $(addprefix docker-test-,$(DOCKER_ARCHS))
+PUSH_DOCKER_ARCHS  = $(addprefix docker-push-,$(DOCKER_ARCHS))
+
+
+BASE_DOCKER_SHA=''
+arch = $(shell uname -m)
+
+include .busybox-versions
+# The include .busybox-versions includes the SHA's of all the platforms, which can be used as var.
+ifeq ($(arch), x86_64)
+	# amd64
+	BASE_DOCKER_SHA=${amd64}
+else ifeq ($(arch), armv8)
+	# arm64
+	BASE_DOCKER_SHA=${arm64}
+else ifeq ($(arch), arm64)
+	# arm64
+	BASE_DOCKER_SHA=${arm64}
+else ifeq ($(arch), aarch64)
+        # arm64
+        BASE_DOCKER_SHA=${arm64}
+else ifeq ($(arch), ppc64le)
+	# ppc64le
+	BASE_DOCKER_SHA=${ppc64le}
+else
+	echo >&2 "only support amd64, arm64 or ppc64le arch" && exit 1
+endif
+
 # Build flags
 PKG = github.com/thanos-io/thanos-parquet-gateway/pkg/version
 LDFLAGS = -s -w \
@@ -64,29 +96,34 @@ proto/metapb/meta.pb.go: proto/metapb/meta.proto
 	@echo ">> compiling protos..."
 	@$(PROTOC) -I=proto/metapb/ --go_out=paths=source_relative:./proto/metapb/ proto/metapb/meta.proto
 
-# Docker targets
-docker-build-local:
-	@echo ">> building docker image (local)"
-	@docker build \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg REVISION=$(REVISION) \
-		--build-arg BRANCH=$(BRANCH) \
-		--build-arg BUILD_USER=$(BUILD_USER) \
-		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG) .
+.PHONY: docker-test $(TEST_DOCKER_ARCHS)
+docker-test: $(TEST_DOCKER_ARCHS)
+$(TEST_DOCKER_ARCHS): docker-test-%:
+	@echo ">> testing image"
+	@docker run "thanos-linux-$*" --help
 
-docker-build:
-	@echo ">> building docker image"
-	@docker buildx create --name $(DOCKER_BUILDX_BUILDER) --use || true
-	@docker buildx build --platform=$(DOCKER_PLATFORM) \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg REVISION=$(REVISION) \
-		--build-arg BRANCH=$(BRANCH) \
-		--build-arg BUILD_USER=$(BUILD_USER) \
-		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t $(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG) \
-		-t $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG) \
-		.
+.PHONY: docker-build $(BUILD_DOCKER_ARCHS)
+docker-build: $(BUILD_DOCKER_ARCHS)
+$(BUILD_DOCKER_ARCHS): docker-build-%:
+	@docker build -t "thanos-linux-$*" \
+  --build-arg BASE_DOCKER_SHA="$($*)" \
+  --build-arg ARCH="$*" \
+  .
+
+# docker-manifest push docker manifest to support multiple architectures.
+.PHONY: docker-manifest
+docker-manifest:
+	@echo ">> creating and pushing manifest"
+	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create -a "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)" $(foreach ARCH,$(DOCKER_ARCHS),$(DOCKER_IMAGE_REPO)-linux-$(ARCH):$(DOCKER_IMAGE_TAG))
+	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)"
+
+.PHONY: docker-push $(PUSH_DOCKER_ARCHS)
+docker-push: ## Pushes Thanos docker image build to "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)".
+docker-push: $(PUSH_DOCKER_ARCHS)
+$(PUSH_DOCKER_ARCHS): docker-push-%:
+	@echo ">> pushing image"
+	@docker tag "thanos-linux-$*" "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
+	@docker push "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
 
 docker-test:
 	@echo ">> testing docker image"
@@ -97,6 +134,21 @@ docker-push:
 	@docker buildx build --platform=$(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg REVISION=$(REVISION) \
+
+	# docker-manifest push docker manifest to support multiple architectures.
+.PHONY: docker-manifest
+docker-manifest:
+	@echo ">> creating and pushing manifest"
+	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create -a "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)" $(foreach ARCH,$(DOCKER_ARCHS),$(DOCKER_IMAGE_REPO)-linux-$(ARCH):$(DOCKER_IMAGE_TAG))
+	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)"
+
+.PHONY: docker-push $(PUSH_DOCKER_ARCHS)
+docker-push: ## Pushes Thanos docker image build to "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)".
+docker-push: $(PUSH_DOCKER_ARCHS)
+$(PUSH_DOCKER_ARCHS): docker-push-%:
+	@echo ">> pushing image"
+	@docker tag "thanos-linux-$*" "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
+	@docker push "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
 		--build-arg BRANCH=$(BRANCH) \
 		--build-arg BUILD_USER=$(BUILD_USER) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
@@ -112,10 +164,10 @@ docker-manifest:
 crossbuild:
 	@echo ">> cross-building binaries"
 	@mkdir -p .build
-	@for os in linux darwin windows; do \
-		for arch in amd64 arm64; do \
+	@for os in linux; do \
+		for arch in amd64 arm64 ppc64le; do \
 			echo "Building for $$os/$$arch"; \
-			GOOS=$$os GOARCH=$$arch $(GO) build $(GO_BUILD_ARGS) -o .build/thanos-parquet-gateway-$$os-$$arch github.com/thanos-io/thanos-parquet-gateway/cmd; \
+			GOOS=$$os GOARCH=$$arch $(GO) build $(GO_BUILD_ARGS) -o .build/$$os-$$arch/thanos-parquet-gateway github.com/thanos-io/thanos-parquet-gateway/cmd; \
 		done; \
 	done
 
