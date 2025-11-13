@@ -86,7 +86,7 @@ docker-build:
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t $(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG) \
 		-t $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG) \
-		--push .
+		.
 
 docker-test:
 	@echo ">> testing docker image"
