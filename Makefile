@@ -110,13 +110,6 @@ $(BUILD_DOCKER_ARCHS): docker-build-%:
   --build-arg ARCH="$*" \
   .
 
-# docker-manifest push docker manifest to support multiple architectures.
-.PHONY: docker-manifest
-docker-manifest:
-	@echo ">> creating and pushing manifest"
-	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create -a "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)" $(foreach ARCH,$(DOCKER_ARCHS),$(DOCKER_IMAGE_REPO)-linux-$(ARCH):$(DOCKER_IMAGE_TAG))
-	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)"
-
 .PHONY: docker-push $(PUSH_DOCKER_ARCHS)
 docker-push: ## Pushes Thanos docker image build to "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)".
 docker-push: $(PUSH_DOCKER_ARCHS)
@@ -141,24 +134,6 @@ docker-manifest:
 	@echo ">> creating and pushing manifest"
 	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest create -a "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)" $(foreach ARCH,$(DOCKER_ARCHS),$(DOCKER_IMAGE_REPO)-linux-$(ARCH):$(DOCKER_IMAGE_TAG))
 	@DOCKER_CLI_EXPERIMENTAL=enabled docker manifest push "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)"
-
-.PHONY: docker-push $(PUSH_DOCKER_ARCHS)
-docker-push: ## Pushes Thanos docker image build to "$(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG)".
-docker-push: $(PUSH_DOCKER_ARCHS)
-$(PUSH_DOCKER_ARCHS): docker-push-%:
-	@echo ">> pushing image"
-	@docker tag "thanos-linux-$*" "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
-	@docker push "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
-		--build-arg BRANCH=$(BRANCH) \
-		--build-arg BUILD_USER=$(BUILD_USER) \
-		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t $(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG) \
-		-t $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG) \
-		--push .
-
-docker-manifest:
-	@echo ">> creating docker manifest"
-	@docker buildx imagetools create -t $(DOCKER_IMAGE_REPO):$(DOCKER_IMAGE_TAG) $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG)
 
 # Cross-compilation targets
 crossbuild:
