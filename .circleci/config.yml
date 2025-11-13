@@ -49,6 +49,7 @@ jobs:
           at: .
       # Register qemu to support multi-arch.
       - run: docker run --privileged tonistiigi/binfmt:qemu-v6.1.0 --install all
+      - run: make crossbuild
       - run:
           name: Build Docker image
           command: make docker-build
