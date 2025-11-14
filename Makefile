@@ -8,7 +8,7 @@ BUILD_USER ?= $(shell whoami)@$(shell hostname)
 BUILD_DATE ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
 # Docker variables
-DOCKER_IMAGE_REPO ?= quay.io/thanos-io/thanos-parquet-gateway
+DOCKER_IMAGE_REPO ?= quay.io/thanos/thanos-parquet-gateway
 DOCKER_IMAGE_TAG ?= latest
 DOCKER_CI_TAG ?= $(shell git rev-parse --short HEAD)
 DOCKER_PLATFORM ?= linux/amd64,linux/arm64
@@ -117,12 +117,6 @@ $(PUSH_DOCKER_ARCHS): docker-push-%:
 	@echo ">> pushing image"
 	@docker tag "thanos-linux-$*" "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
 	@docker push "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
-
-docker-push:
-	@echo ">> pushing docker image"
-	@docker buildx build --platform=$(DOCKER_PLATFORM) \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg REVISION=$(REVISION) \
 
 	# docker-manifest push docker manifest to support multiple architectures.
 .PHONY: docker-manifest
