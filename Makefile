@@ -142,7 +142,7 @@ crossbuild:
 	@for os in linux; do \
 		for arch in amd64 arm64 ppc64le; do \
 			echo "Building for $$os/$$arch"; \
-			GOOS=$$os GOARCH=$$arch $(GO) build $(GO_BUILD_ARGS) -o .build/$$os-$$arch/thanos-parquet-gateway github.com/thanos-io/thanos-parquet-gateway/cmd; \
+			CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(GO_BUILD_ARGS) -o .build/$$os-$$arch/thanos-parquet-gateway github.com/thanos-io/thanos-parquet-gateway/cmd; \
 		done; \
 	done
 
