@@ -9,7 +9,7 @@ BUILD_DATE ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
 # Docker variables
 DOCKER_IMAGE_REPO ?= quay.io/thanos/thanos-parquet-gateway
-DOCKER_IMAGE_TAG ?= latest
+DOCKER_IMAGE_TAG  ?= $(subst /,-,$(shell git rev-parse --abbrev-ref HEAD))-$(shell date +%Y-%m-%d)-$(shell git rev-parse --short HEAD)
 DOCKER_CI_TAG ?= $(shell git rev-parse --short HEAD)
 DOCKER_PLATFORM ?= linux/amd64,linux/arm64
 DOCKER_BUILDX_BUILDER ?= multi-arch-builder
