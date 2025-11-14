@@ -118,10 +118,6 @@ $(PUSH_DOCKER_ARCHS): docker-push-%:
 	@docker tag "thanos-linux-$*" "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
 	@docker push "$(DOCKER_IMAGE_REPO)-linux-$*:$(DOCKER_IMAGE_TAG)"
 
-docker-test:
-	@echo ">> testing docker image"
-	@docker run --rm $(DOCKER_IMAGE_REPO):$(DOCKER_CI_TAG) --version
-
 docker-push:
 	@echo ">> pushing docker image"
 	@docker buildx build --platform=$(DOCKER_PLATFORM) \
