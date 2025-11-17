@@ -65,7 +65,7 @@ func (opts *serveOpts) registerFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3")
+	cmd.Flag("storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3", "gcs")
 	cmd.Flag("storage.prefix", "prefix for the storage").Default("").StringVar(&opts.prefix)
 	cmd.Flag("storage.filesystem.directory", "directory for filesystem").Default(".data").StringVar(&opts.filesystemDirectory)
 	cmd.Flag("storage.s3.bucket", "bucket for s3").Default("").StringVar(&opts.s3Bucket)
@@ -73,6 +73,8 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("storage.s3.access_key", "access key for s3").Default("").Envar("STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("storage.s3.secret_key", "secret key for s3").Default("").Envar("STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("storage.gcs.bucket", "GCS bucket").Default("").Envar("STORAGE_GCS_BUCKET").StringVar(&opts.gcsBucket)
+	cmd.Flag("storage.gcs.service_account", "Inline GCS service account JSON").Default("").Envar("STORAGE_GCS_SERVICE_ACCOUNT").StringVar(&opts.gcsServiceAccount)
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {

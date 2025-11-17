@@ -85,7 +85,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("parquet.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3")
+	cmd.Flag("parquet.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3", "gcs")
 	cmd.Flag("parquet.storage.prefix", "prefix for the storage").Default("").StringVar(&opts.prefix)
 	cmd.Flag("parquet.storage.filesystem.directory", "directory for filesystem").Default(".data").StringVar(&opts.filesystemDirectory)
 	cmd.Flag("parquet.storage.s3.bucket", "bucket for s3").Default("").StringVar(&opts.s3Bucket)
@@ -93,10 +93,12 @@ func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("parquet.storage.s3.access_key", "access key for s3").Default("").Envar("PARQUET_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("parquet.storage.s3.secret_key", "secret key for s3").Default("").Envar("PARQUET_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("parquet.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("parquet.storage.gcs.bucket", "GCS bucket").Default("").Envar("PARQUET_STORAGE_GCS_BUCKET").StringVar(&opts.gcsBucket)
+	cmd.Flag("parquet.storage.gcs.service_account", "Inline GCS service account JSON").Default("").Envar("PARQUET_STORAGE_GCS_SERVICE_ACCOUNT").StringVar(&opts.gcsServiceAccount)
 }
 
 func (opts *bucketOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tsdb.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3")
+	cmd.Flag("tsdb.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3", "gcs")
 	cmd.Flag("tsdb.storage.prefix", "prefix for the storage").Default("").StringVar(&opts.prefix)
 	cmd.Flag("tsdb.storage.filesystem.directory", "directory for filesystem").Default(".data").StringVar(&opts.filesystemDirectory)
 	cmd.Flag("tsdb.storage.s3.bucket", "bucket for s3").Default("").StringVar(&opts.s3Bucket)
@@ -104,6 +106,8 @@ func (opts *bucketOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("tsdb.storage.s3.access_key", "access key for s3").Default("").Envar("TSDB_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
 	cmd.Flag("tsdb.storage.s3.secret_key", "secret key for s3").Default("").Envar("TSDB_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
 	cmd.Flag("tsdb.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("tsdb.storage.gcs.bucket", "GCS bucket").Default("").Envar("TSDB_STORAGE_GCS_BUCKET").StringVar(&opts.gcsBucket)
+	cmd.Flag("tsdb.storage.gcs.service_account", "Inline GCS service account JSON").Default("").Envar("TSDB_STORAGE_GCS_SERVICE_ACCOUNT").StringVar(&opts.gcsServiceAccount)
 }
 
 func (opts *discoveryOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {

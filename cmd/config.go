@@ -58,6 +58,10 @@ type bucketOpts struct {
 	s3SecretKey string
 	s3Insecure  bool
 
+	// gcs options
+	gcsBucket         string
+	gcsServiceAccount string
+
 	retries int
 }
 
@@ -90,6 +94,15 @@ func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 			SecretKey:  opts.s3SecretKey,
 			Insecure:   opts.s3Insecure,
 			MaxRetries: opts.retries,
+		}
+
+	case objstore.GCS:
+		subCfg = struct {
+			Bucket         string `yaml:"bucket"`
+			ServiceAccount string `yaml:"service_account"`
+		}{
+			Bucket:         opts.gcsBucket,
+			ServiceAccount: opts.gcsServiceAccount,
 		}
 	default:
 		return nil, fmt.Errorf("unknown bucket type: %s", prov)
