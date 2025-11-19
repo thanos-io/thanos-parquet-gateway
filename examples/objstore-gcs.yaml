@@ -1,0 +1,4 @@
+type: GCS
+config:
+  bucket: "my-thanos-bucket"
+  service_account: ""
