@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"slices"
 	"strings"
 
@@ -157,9 +156,8 @@ func ConvertTSDBBlock(
 	bkt objstore.Bucket,
 	day util.Date,
 	blks []Convertible,
-	logger *slog.Logger,
 	opts ...ConvertOption,
-) (int, error) {
+) (n int, rerr error) {
 	cfg := &convertOpts{
 		rowGroupSize:        1_000_000,
 		numRowGroups:        6,
@@ -184,10 +182,9 @@ func ConvertTSDBBlock(
 	}
 	defer func() {
 		for _, rr := range shardedRowReaders {
-			_ = rr.Close()
+			defer errcapture.Do(&rerr, rr.Close, "index row reader close")
 		}
 	}()
-	logger.Info("starting parallel block conversion", "shards", len(shardedRowReaders), "write_concurrency", cfg.writeConcurrency)
 	errGroup := &errgroup.Group{}
 	errGroup.SetLimit(cfg.writeConcurrency)
 	for shard, rr := range shardedRowReaders {
@@ -245,14 +242,15 @@ func shardedIndexRowReader(
 	mint, maxt int64,
 	blocks []Convertible,
 	opts convertOpts,
-) ([]*indexRowReader, error) {
+) (reader []*indexRowReader, rerr error) {
 	// Blocks can have multiple entries with the same of ULID in the case of head blocks;
 	// track all blocks by their index in the input slice rather than assuming unique ULIDs.
 	indexReaders := make([]blockIndexReader, len(blocks))
 	// Simpler to track and close these readers separate from those used by shard conversion reader/writers.
+
 	defer func() {
 		for _, indexReader := range indexReaders {
-			_ = indexReader.reader.Close()
+			errcapture.Do(&rerr, indexReader.reader.Close, "index row reader close")
 		}
 	}()
 	for i, blk := range blocks {
@@ -280,11 +278,10 @@ func shardedIndexRowReader(
 
 	// We close everything if any errors or panic occur
 	allClosers := make([]io.Closer, 0, len(blocks)*3)
-	ok := false
 	defer func() {
-		if !ok {
+		if rerr != nil {
 			for _, closer := range allClosers {
-				_ = closer.Close()
+				errcapture.Do(&rerr, closer.Close, "closer close")
 			}
 		}
 	}()
@@ -364,7 +361,6 @@ func shardedIndexRowReader(
 			labelHashColumn:  columnIDForKnownColumn(s, schema.LabelHashColumn),
 		}
 	}
-	ok = true
 	return shardIndexRowReader, nil
 }
 

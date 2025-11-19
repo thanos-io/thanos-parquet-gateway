@@ -10,9 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
-	"os"
 	"slices"
 	"testing"
 	"time"
@@ -71,8 +69,7 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if _, err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{Head: h}}, logger, opts...); err != nil {
+	if _, err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 

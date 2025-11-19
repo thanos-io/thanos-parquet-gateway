@@ -8,9 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
-	"os"
 	"slices"
 	"sort"
 	"testing"
@@ -1358,8 +1356,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if _, err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}, logger); err != nil {
+	if _, err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
 		tb.Fatal(err)
 	}
 
