@@ -342,7 +342,7 @@ func shardedIndexRowReader(
 		}
 
 		mergeSeriesSet := newMergeChunkSeriesSet(
-			seriesSets, compareBySortedLabelsFunc(opts.sortLabels), storage.NewConcatenatingChunkSeriesMerger(),
+			seriesSets, compareBySortedLabelsFunc(opts.sortLabels), storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge),
 		)
 
 		slices.Sort(lbls)
