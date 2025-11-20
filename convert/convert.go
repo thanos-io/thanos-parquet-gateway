@@ -218,6 +218,10 @@ func ConvertTSDBBlock(
 		return 0, fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
+	if err := writeMetaFile(start, end, name, int64(len(shardedRowReaders)), bkt, ctx); err != nil {
+		return 0, fmt.Errorf("failed to write meta file: %w", err)
+	}
+
 	lastSuccessfulConvertTime.SetToCurrentTime()
 
 	return len(shardedRowReaders), nil
@@ -235,6 +239,25 @@ type blockSeries struct {
 	seriesIdx int // index of the series in the block postings
 	ref       storage.SeriesRef
 	labels    labels.Labels
+}
+
+func writeMetaFile(start int64, end int64, name string, numShards int64, bkt objstore.Bucket, ctx context.Context) error {
+	meta := &metapb.Metadata{
+		Version: schema.V2,
+		Mint:    start,
+		Maxt:    end,
+		Shards:  numShards,
+	}
+
+	metaBytes, err := proto.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("unable to marshal meta bytes: %w", err)
+	}
+	if err := bkt.Upload(ctx, schema.MetaFileNameForBlock(name), bytes.NewReader(metaBytes)); err != nil {
+		return fmt.Errorf("unable to upload meta file: %w", err)
+	}
+
+	return nil
 }
 
 func shardedIndexRowReader(
@@ -578,28 +601,6 @@ func (c *converter) convert(ctx context.Context) error {
 	if err := c.optimizeShard(ctx); err != nil {
 		return fmt.Errorf("unable to optimize shards: %w", err)
 	}
-	if err := c.writeMetaFile(ctx); err != nil {
-		return fmt.Errorf("unable to write meta file: %w", err)
-	}
-	return nil
-}
-
-func (c *converter) writeMetaFile(ctx context.Context) error {
-	meta := &metapb.Metadata{
-		Version: schema.V2,
-		Mint:    c.mint,
-		Maxt:    c.maxt,
-		Shards:  int64(c.shard) + 1,
-	}
-
-	metaBytes, err := proto.Marshal(meta)
-	if err != nil {
-		return fmt.Errorf("unable to marshal meta bytes: %w", err)
-	}
-	if err := c.bkt.Upload(ctx, schema.MetaFileNameForBlock(c.name), bytes.NewReader(metaBytes)); err != nil {
-		return fmt.Errorf("unable to upload meta file: %w", err)
-	}
-
 	return nil
 }
 
