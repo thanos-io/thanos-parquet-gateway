@@ -102,6 +102,7 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 		}
 	}()
 
+	labelsSchema := schema.LabelsProjection(rr.schema)
 	colIdxSlice := make([]int, 0)
 	i, j := 0, 0
 	for promise := range chunkSeriesC {
@@ -120,9 +121,10 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 		chkLbls.Range(func(l labels.Label) {
 			colName := schema.LabelNameToColumn(l.Name)
 			lc, _ := rr.schema.Lookup(colName)
+			labelsIndex, _ := labelsSchema.Lookup(colName)
 			rr.rowBuilder.Add(lc.ColumnIndex, parquet.ValueOf(l.Value))
 			// we need to address for projecting chunk columns away later so we need to correct for the offset here
-			colIdxSlice = append(colIdxSlice, lc.ColumnIndex-schema.ChunkColumnsPerDay)
+			colIdxSlice = append(colIdxSlice, labelsIndex.ColumnIndex)
 		})
 		rr.rowBuilder.Add(rr.labelIndexColumn, parquet.ValueOf(encoding.EncodeLabelColumnIndex(colIdxSlice)))
 		rr.rowBuilder.Add(rr.labelHashColumn, parquet.ValueOf(chkLbls.Hash()))

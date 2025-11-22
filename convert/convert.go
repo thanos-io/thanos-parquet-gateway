@@ -30,7 +30,6 @@ import (
 	"github.com/thanos-io/objstore"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -598,86 +597,6 @@ func (c *converter) convert(ctx context.Context) error {
 	if _, err := c.convertShard(ctx); err != nil {
 		return fmt.Errorf("unable to convert shards: %w", err)
 	}
-	if err := c.optimizeShard(ctx); err != nil {
-		return fmt.Errorf("unable to optimize shards: %w", err)
-	}
-	return nil
-}
-
-// Since we have to compute the schema from the whole TSDB Block it is highly likely that the
-// labels parquet file we wrote just now contains many empty columns - we project them away again
-func (c *converter) optimizeShard(ctx context.Context) (rerr error) {
-	rc, err := c.bkt.Get(ctx, schema.LabelsPfileNameForShard(c.name, c.shard))
-	if err != nil {
-		return fmt.Errorf("unable to fetch labels parquet file: %w", err)
-	}
-	defer errcapture.Do(&rerr, rc.Close, "labels parquet file close")
-
-	rbuf := bytes.NewBuffer(nil)
-	if _, err := io.Copy(rbuf, rc); err != nil {
-		return fmt.Errorf("unable to copy labels parquet file: %w", err)
-	}
-
-	pf, err := parquet.OpenFile(bytes.NewReader(rbuf.Bytes()), int64(rbuf.Len()))
-	if err != nil {
-		return fmt.Errorf("unable to open labels parquet file: %w", err)
-	}
-
-	s := pf.Schema()
-	ns := schema.WithCompression(schema.RemoveNullColumns(pf))
-
-	buf := bytes.NewBuffer(nil)
-	w := parquet.NewGenericWriter[any](buf, append(c.labelWriterOptions(), ns)...)
-
-	rb := parquet.NewRowBuilder(ns)
-	rowBuf := make([]parquet.Row, 128)
-	colIdxSlice := make([]int, 0)
-	labelIndexColumn := columnIDForKnownColumn(ns, schema.LabelIndexColumn)
-
-	for _, rg := range pf.RowGroups() {
-		rows := rg.Rows()
-		defer errcapture.Do(&rerr, rows.Close, "labels parquet file row group close")
-
-		for {
-			n, err := rows.ReadRows(rowBuf)
-			if err != nil && !errors.Is(err, io.EOF) {
-				return fmt.Errorf("unable to read rows: %w", err)
-			}
-
-			for i, row := range rowBuf[:n] {
-				rb.Reset()
-				colIdxSlice = colIdxSlice[:0]
-				for j, v := range row {
-					if !v.IsNull() {
-						if lc, ok := ns.Lookup(s.Columns()[j]...); ok && lc.ColumnIndex != labelIndexColumn {
-							colIdxSlice = append(colIdxSlice, lc.ColumnIndex)
-							rb.Add(lc.ColumnIndex, v)
-						}
-					}
-				}
-				rb.Add(labelIndexColumn, parquet.ValueOf(encoding.EncodeLabelColumnIndex(colIdxSlice)))
-				rowBuf[i] = rb.AppendRow(rowBuf[i][:0])
-			}
-
-			if m, err := w.WriteRows(rowBuf[:n]); err != nil {
-				return fmt.Errorf("unable to write transformed rows: %w", err)
-			} else if m != n {
-				return fmt.Errorf("unable to write rows: %d != %d", n, m)
-			}
-
-			if errors.Is(err, io.EOF) {
-				break
-			}
-		}
-	}
-
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("unable to close writer: %w", err)
-	}
-	if err := c.bkt.Upload(ctx, schema.LabelsPfileNameForShard(c.name, c.shard), buf); err != nil {
-		return fmt.Errorf("unable to override optimized labels parquet file: %w", err)
-	}
-
 	return nil
 }
 
