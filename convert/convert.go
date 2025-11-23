@@ -217,7 +217,7 @@ func ConvertTSDBBlock(
 		return 0, fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
-	if err := writeMetaFile(start, end, name, int64(len(shardedRowReaders)), bkt, ctx); err != nil {
+	if err := writeMetaFile(ctx, start, end, name, int64(len(shardedRowReaders)), bkt); err != nil {
 		return 0, fmt.Errorf("failed to write meta file: %w", err)
 	}
 
@@ -240,7 +240,7 @@ type blockSeries struct {
 	labels    labels.Labels
 }
 
-func writeMetaFile(start int64, end int64, name string, numShards int64, bkt objstore.Bucket, ctx context.Context) error {
+func writeMetaFile(ctx context.Context, start int64, end int64, name string, numShards int64, bkt objstore.Bucket) error {
 	meta := &metapb.Metadata{
 		Version: schema.V2,
 		Mint:    start,
