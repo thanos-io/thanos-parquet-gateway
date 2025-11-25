@@ -1356,7 +1356,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	if _, err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
+	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
 		tb.Fatal(err)
 	}
 

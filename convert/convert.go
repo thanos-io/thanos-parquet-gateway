@@ -156,7 +156,7 @@ func ConvertTSDBBlock(
 	day util.Date,
 	blks []Convertible,
 	opts ...ConvertOption,
-) (n int, rerr error) {
+) (rerr error) {
 	cfg := &convertOpts{
 		rowGroupSize:        1_000_000,
 		numRowGroups:        6,
@@ -177,7 +177,7 @@ func ConvertTSDBBlock(
 
 	shardedRowReaders, err := shardedIndexRowReader(ctx, start, end, blks, *cfg)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create sharded TSDB row readers: %w", err)
+		return fmt.Errorf("failed to create sharded TSDB row readers: %w", err)
 	}
 	defer func() {
 		for _, rr := range shardedRowReaders {
@@ -214,16 +214,16 @@ func ConvertTSDBBlock(
 
 	err = errGroup.Wait()
 	if err != nil {
-		return 0, fmt.Errorf("failed to convert shards in parallel: %w", err)
+		return fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
 	if err := writeMetaFile(ctx, start, end, name, int64(len(shardedRowReaders)), bkt); err != nil {
-		return 0, fmt.Errorf("failed to write meta file: %w", err)
+		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
 	lastSuccessfulConvertTime.SetToCurrentTime()
 
-	return len(shardedRowReaders), nil
+	return nil
 }
 
 type blockIndexReader struct {
