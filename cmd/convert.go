@@ -116,6 +116,8 @@ func (opts *tsdbDiscoveryOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) 
 	cmd.Flag("tsdb.discovery.concurrency", "concurrency for loading metadata").Default("1").IntVar(&opts.discoveryConcurrency)
 	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this won't be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
 	MatchersVar(cmd.Flag("tsdb.discovery.select-external-labels", "only external labels matching this selector will be discovered").PlaceHolder("SELECTOR"), &opts.externalLabelMatchers)
+	cmd.Flag("tsdb.discovery.min-time", "relative start offset (e.g. -168h). By default conversion rounds to day start (00:00:00 UTC)").Default("0s").DurationVar(&opts.minTimeOffset)
+	cmd.Flag("tsdb.discovery.max-time", "relative end offset (e.g. -48h). By default conversion rounds to next day start (exclusive)").Default("0s").DurationVar(&opts.maxTimeOffset)
 }
 
 func (opts *apiOpts) registerConvertFlags(cmd *kingpin.CmdClause) {
@@ -210,7 +212,11 @@ func advanceConversion(
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	minOff, maxOff := tsdbDiscoverer.TimeOffsets()
+	// Build planner with optional time window (offsets zero => no filtering).
+	p := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).WithTimeWindow(minOff, maxOff)
+	plan := p.Plan(tsdbMetas, parquetMetas)
+
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil

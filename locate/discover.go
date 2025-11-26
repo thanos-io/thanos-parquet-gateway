@@ -214,9 +214,18 @@ type tsdbDiscoveryConfig struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	minTimeOffset         time.Duration
+	maxTimeOffset         time.Duration
 }
 
 type TSDBDiscoveryOption func(*tsdbDiscoveryConfig)
+
+func TSDBMinTimeOffset(d time.Duration) TSDBDiscoveryOption {
+	return func(cfg *tsdbDiscoveryConfig) { cfg.minTimeOffset = d }
+}
+func TSDBMaxTimeOffset(d time.Duration) TSDBDiscoveryOption {
+	return func(cfg *tsdbDiscoveryConfig) { cfg.maxTimeOffset = d }
+}
 
 func TSDBMetaConcurrency(c int) TSDBDiscoveryOption {
 	return func(cfg *tsdbDiscoveryConfig) {
@@ -244,6 +253,8 @@ type TSDBDiscoverer struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	minTimeOffset         time.Duration
+	maxTimeOffset         time.Duration
 
 	concurrency int
 }
@@ -261,7 +272,12 @@ func NewTSDBDiscoverer(bkt objstore.Bucket, opts ...TSDBDiscoveryOption) *TSDBDi
 		concurrency:           cfg.concurrency,
 		externalLabelMatchers: cfg.externalLabelMatchers,
 		minBlockAge:           cfg.minBlockAge,
+		minTimeOffset:         cfg.minTimeOffset,
+		maxTimeOffset:         cfg.maxTimeOffset,
 	}
+}
+func (s *TSDBDiscoverer) TimeOffsets() (time.Duration, time.Duration) {
+	return s.minTimeOffset, s.maxTimeOffset
 }
 
 func (s *TSDBDiscoverer) Metas() map[string]metadata.Meta {
