@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -118,6 +119,53 @@ func TestConverter(t *testing.T) {
 	}
 	if totalRows != int64(st.DB.Head().NumSeries()) {
 		t.Fatalf("too few rows: %d", totalRows)
+	}
+}
+
+func TestConverterIndexWithManyLabelNames(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping, because 'short' flag was set")
+	}
+	t.Skip("Expected failure: We dont yet limit the amount of columns we create during conversion")
+
+	// A parquet file can have 32767 columns. We create a column per unique label name
+	// if we have too many unique label names in an index we need to compute its schema
+	// per-shard. If we would do it for the whole index we would run into this limit otherwise.
+
+	st := teststorage.New(t)
+	t.Cleanup(func() { _ = st.Close() })
+
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	app := st.Appender(t.Context())
+	for i := range 34_000 {
+		lbls := labels.FromStrings(
+			"__name__", fmt.Sprintf("name_%d", i/100),
+			fmt.Sprintf("col_0_%d", i), strconv.Itoa(1),
+		)
+		_, err := app.Append(0, lbls, time.Second.Milliseconds(), float64(i))
+		if err != nil {
+			t.Fatalf("unable to append sample: %s", err)
+		}
+	}
+	if err := app.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+
+	h := st.Head()
+	ts := time.UnixMilli(h.MinTime()).UTC()
+	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+	opts := []ConvertOption{
+		SortBy(labels.MetricName),
+		LabelPageBufferSize(units.KiB), // results in 2 pages
+	}
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{h}}, opts...); err != nil {
+		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }
 
