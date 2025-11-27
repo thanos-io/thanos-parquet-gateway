@@ -9,14 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
-	"strings"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
-	"github.com/prometheus/prometheus/tsdb"
-	"github.com/prometheus/prometheus/tsdb/index"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -47,74 +43,6 @@ type indexReaderOpts struct {
 }
 
 var _ parquet.RowReader = &indexRowReader{}
-
-func newIndexRowReader(ctx context.Context, mint, maxt int64, blks []Convertible, opts indexReaderOpts) (*indexRowReader, error) {
-	var (
-		lbls       = make([]string, 0)
-		seriesSets = make([]storage.ChunkSeriesSet, 0, len(blks))
-		closers    = make([]io.Closer, 0, len(blks))
-	)
-
-	compareFunc := func(a, b labels.Labels) int {
-		for _, lb := range opts.sortLabels {
-			if c := strings.Compare(a.Get(lb), b.Get(lb)); c != 0 {
-				return c
-			}
-		}
-		return labels.Compare(a, b)
-	}
-
-	for _, blk := range blks {
-		indexr, err := blk.Index()
-		if err != nil {
-			return nil, fmt.Errorf("unable to get index reader from block: %s", err)
-		}
-		closers = append(closers, indexr)
-
-		chunkr, err := blk.Chunks()
-		if err != nil {
-			return nil, fmt.Errorf("unable to get chunk reader from block: %s", err)
-		}
-		closers = append(closers, chunkr)
-
-		tombsr, err := blk.Tombstones()
-		if err != nil {
-			return nil, fmt.Errorf("unable to get tombstone reader from block: %s", err)
-		}
-		closers = append(closers, tombsr)
-
-		lblns, err := indexr.LabelNames(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("unable to get label names from block: %s", err)
-		}
-		lbls = append(lbls, lblns...)
-
-		postings := sortedPostings(ctx, indexr, compareFunc)
-		seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
-		seriesSets = append(seriesSets, seriesSet)
-	}
-	slices.Sort(lbls)
-
-	cseriesSet := newMergeChunkSeriesSet(seriesSets, compareFunc, storage.NewConcatenatingChunkSeriesMerger())
-	s := schema.BuildSchemaFromLabels(slices.Compact(lbls))
-
-	return &indexRowReader{
-		ctx:       ctx,
-		seriesSet: cseriesSet,
-		closers:   closers,
-
-		schema:     s,
-		rowBuilder: parquet.NewRowBuilder(s),
-
-		concurrency: opts.concurrency,
-
-		chunksColumn0:    columnIDForKnownColumn(s, schema.ChunksColumn0),
-		chunksColumn1:    columnIDForKnownColumn(s, schema.ChunksColumn1),
-		chunksColumn2:    columnIDForKnownColumn(s, schema.ChunksColumn2),
-		labelIndexColumn: columnIDForKnownColumn(s, schema.LabelIndexColumn),
-		labelHashColumn:  columnIDForKnownColumn(s, schema.LabelHashColumn),
-	}, nil
-}
 
 func columnIDForKnownColumn(schema *parquet.Schema, columnName string) int {
 	lc, _ := schema.Lookup(columnName)
@@ -194,7 +122,7 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 			lc, _ := rr.schema.Lookup(colName)
 			rr.rowBuilder.Add(lc.ColumnIndex, parquet.ValueOf(l.Value))
 			// we need to address for projecting chunk columns away later so we need to correct for the offset here
-			colIdxSlice = append(colIdxSlice, lc.ColumnIndex-schema.ChunkColumnsPerDay)
+			colIdxSlice = append(colIdxSlice, lc.ColumnIndex-schema.ChunkColumnsPerDay-1)
 		})
 		rr.rowBuilder.Add(rr.labelIndexColumn, parquet.ValueOf(encoding.EncodeLabelColumnIndex(colIdxSlice)))
 		rr.rowBuilder.Add(rr.labelHashColumn, parquet.ValueOf(chkLbls.Hash()))
@@ -223,44 +151,6 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 		return i, io.EOF
 	}
 	return i, rr.seriesSet.Err()
-}
-
-func sortedPostings(ctx context.Context, indexr tsdb.IndexReader, compare func(a, b labels.Labels) int) index.Postings {
-	p := tsdb.AllSortedPostings(ctx, indexr)
-
-	type s struct {
-		ref    storage.SeriesRef
-		labels labels.Labels
-	}
-	series := make([]s, 0, 128)
-
-	lb := labels.NewScratchBuilder(10)
-	for p.Next() {
-		select {
-		case <-ctx.Done():
-			return index.ErrPostings(ctx.Err())
-		default:
-		}
-		lb.Reset()
-		if err := indexr.Series(p.At(), &lb, nil); err != nil {
-			return index.ErrPostings(fmt.Errorf("unable to expand series: %w", err))
-		}
-		series = append(series, s{labels: lb.Labels(), ref: p.At()})
-	}
-	if err := p.Err(); err != nil {
-		return index.ErrPostings(fmt.Errorf("unable to expand postings: %w", err))
-	}
-
-	slices.SortFunc(series, func(a, b s) int {
-		return compare(a.labels, b.labels)
-	})
-
-	// Convert back to list.
-	ep := make([]storage.SeriesRef, 0, len(series))
-	for _, p := range series {
-		ep = append(ep, p.ref)
-	}
-	return index.NewListPostings(ep)
 }
 
 func allChunksEmpty(chkBytes [schema.ChunkColumnsPerDay][]byte) bool {

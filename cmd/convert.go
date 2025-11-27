@@ -54,6 +54,7 @@ type conversionOpts struct {
 	downloadConcurrency      int
 	blockDownloadConcurrency int
 	encodingConcurrency      int
+	writeConcurrency         int
 
 	tempDir string
 }
@@ -82,6 +83,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.download.concurrency", "concurrency for downloading files in parallel per tsdb block").Default("4").IntVar(&opts.downloadConcurrency)
 	cmd.Flag("convert.download.block-concurrency", "concurrency for downloading & opening multiple blocks in parallel").Default("1").IntVar(&opts.blockDownloadConcurrency)
 	cmd.Flag("convert.encoding.concurrency", "concurrency for encoding chunks").Default("4").IntVar(&opts.encodingConcurrency)
+	cmd.Flag("convert.write.concurrency", "concurrency for writer").Default("4").IntVar(&opts.writeConcurrency)
 }
 
 func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
@@ -265,6 +267,7 @@ func advanceConversion(
 			convert.RowGroupSize(opts.rowGroupSize),
 			convert.RowGroupCount(opts.rowGroupCount),
 			convert.EncodingConcurrency(opts.encodingConcurrency),
+			convert.WriteConcurrency(opts.writeConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
 		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
