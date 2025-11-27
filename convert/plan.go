@@ -48,17 +48,49 @@ type Planner struct {
 	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
 	// for the next plan.
 	maxDays int
+
+	minTimeOffset time.Duration
+	maxTimeOffset time.Duration
 }
 
 func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
+func (p Planner) WithTimeWindow(minOffset, maxOffset time.Duration) Planner {
+	p.minTimeOffset = minOffset
+	p.maxTimeOffset = maxOffset
+	return p
+}
+
 func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	var (
+		windowActive bool
+		winStartDay  time.Time
+		winEndDay    time.Time // exclusive
+	)
+	if p.minTimeOffset != 0 || p.maxTimeOffset != 0 { // fall back to relative offsets
+		now := time.Now()
+		winStart := now.Add(p.minTimeOffset)
+		winEnd := now.Add(p.maxTimeOffset)
+		if winStart.Before(winEnd) { // valid window
+			windowActive = true
+			winStartDay = util.BeginOfDay(winStart)
+			winEndDay = util.BeginOfDay(winEnd) // exclusive
+		}
+	}
+
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
 	for _, tsdb := range tsdbMetas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			// Apply window filtering early: skip dates outside window when active.
+			if windowActive {
+				pt := partialDate.ToTime()
+				if pt.Before(winStartDay) || !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
@@ -67,6 +99,12 @@ func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[strin
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquetMetas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+			if windowActive {
+				pt := partialDate.ToTime()
+				if pt.Before(winStartDay) || !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			pqDates[partialDate] = struct{}{}
 		}
 	}
