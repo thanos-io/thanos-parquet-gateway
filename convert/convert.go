@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
 
@@ -440,47 +441,42 @@ func shardSeries(
 	// Divide rows evenly across shards to avoid one small shard at the end;
 	// Use (a + b - 1) / b equivalence to math.Ceil(a / b)
 	// so integer division does not cut off the remainder series and to avoid floating point issues.
-	totalShards := (uniqueSeriesCount + (opts.numRowGroups * opts.rowGroupSize) - 1) / (opts.numRowGroups * opts.rowGroupSize)
-	rowsPerShard := (uniqueSeriesCount + totalShards - 1) / totalShards
+	targetTotalShards := (uniqueSeriesCount + (opts.numRowGroups * opts.rowGroupSize) - 1) / (opts.numRowGroups * opts.rowGroupSize)
+	rowsPerShard := (uniqueSeriesCount + targetTotalShards - 1) / targetTotalShards
 
 	// For each shard index i, shardSeries[i] is a map of blockIdx -> []series.
-	shardSeries := make([]map[int][]blockSeries, totalShards)
-	for i := range shardSeries {
-		shardSeries[i] = make(map[int][]blockSeries)
-	}
+	shardSeries := make([]map[int][]blockSeries, 1, targetTotalShards)
+	shardSeries[0] = make(map[int][]blockSeries)
 
-	shardIdx, allSeriesIdx := 0, 0
-	for shardIdx < totalShards {
-		seriesToShard := allSeries[allSeriesIdx:]
-
-		i, uniqueCount := 0, 0
-		matchLabels := labels.Labels{}
-		for i < len(seriesToShard) {
-			current := seriesToShard[i]
-			if labels.Compare(current.labels, matchLabels) != 0 {
-				// New unique series
-
-				if uniqueCount >= rowsPerShard {
-					// Stop before adding current series if it would exceed the unique series count for the shard.
-					// Do not increment, we will start the next shard with this series.
-					break
-				}
-
-				// Unique series limit is not hit yet for the shard; add the series.
-				shardSeries[shardIdx][current.blockIdx] = append(shardSeries[shardIdx][current.blockIdx], current)
-				// Increment unique count, update labels to compare against, and move on to next series
-				uniqueCount++
-				matchLabels = current.labels
-				i++
-			} else {
-				// Same labelset as previous series, add it to the shard but do not increment unique count
-				shardSeries[shardIdx][current.blockIdx] = append(shardSeries[shardIdx][current.blockIdx], current)
-				// Move on to next series
-				i++
+	shardIdx, uniqueCount := 0, 0
+	matchLabels := labels.Labels{}
+	labelColumns := make(map[string]struct{})
+	for _, serie := range allSeries {
+		if labels.Compare(serie.labels, matchLabels) != 0 {
+			// New unique series
+			serie.labels.Range(func(label labels.Label) {
+				labelColumns[label.Name] = struct{}{}
+			})
+			if uniqueCount >= rowsPerShard || len(labelColumns)+schema.ChunkColumnsPerDay+1 >= math.MaxInt16 {
+				// Create a new shard if it would exceed the unique series count for the shard
+				// or if number of label columns exceed max allowed parquet schema.
+				// We will start the next shard with this series.
+				shardIdx++
+				shardSeries = append(shardSeries, make(map[int][]blockSeries))
+				labelColumns = make(map[string]struct{})
+				uniqueCount = 0
 			}
-			allSeriesIdx++
+
+			// Unique series limit is not hit yet for the shard; add the series.
+			shardSeries[shardIdx][serie.blockIdx] = append(shardSeries[shardIdx][serie.blockIdx], serie)
+			// Increment unique count, update labels to compare against, and move on to next series
+			uniqueCount++
+			matchLabels = serie.labels
+		} else {
+			// Same labelset as previous series, add it to the shard but do not increment unique count
+			shardSeries[shardIdx][serie.blockIdx] = append(shardSeries[shardIdx][serie.blockIdx], serie)
+			// Move on to next series
 		}
-		shardIdx++
 	}
 
 	return uniqueSeriesCount, shardSeries, nil
