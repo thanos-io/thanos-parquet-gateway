@@ -126,7 +126,6 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping, because 'short' flag was set")
 	}
-	t.Skip("Expected failure: We dont yet limit the amount of columns we create during conversion")
 
 	// A parquet file can have 32767 columns. We create a column per unique label name
 	// if we have too many unique label names in an index we need to compute its schema
