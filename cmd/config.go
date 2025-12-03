@@ -270,8 +270,6 @@ func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt
 		locate.TSDBMetaConcurrency(opts.discoveryConcurrency),
 		locate.TSDBMinBlockAge(opts.discoveryMinBlockAge),
 		locate.TSDBMatchExternalLabels(opts.externalLabelMatchers...),
-		locate.TSDBMaxTimeOffset(opts.maxTimeOffset),
-		locate.TSDBMinTimeOffset(opts.minTimeOffset),
 	)
 
 	log.Info("Running initial tsdb discovery")
