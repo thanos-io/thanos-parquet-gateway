@@ -48,35 +48,45 @@ type Planner struct {
 	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
 	// for the next plan.
 	maxDays int
-
+	// Optional relative time window (offsets from now). If both zero, no window filtering.
 	minTimeOffset time.Duration
 	maxTimeOffset time.Duration
 }
 
-func NewPlanner(notAfter time.Time, maxDays int) Planner {
-	return Planner{notAfter: notAfter, maxDays: maxDays}
+type PlannerOption func(*Planner)
+
+// WithTimeWindow sets optional relative time window offsets.
+func WithTimeWindow(minOffset, maxOffset time.Duration) PlannerOption {
+	return func(p *Planner) {
+		p.minTimeOffset = minOffset
+		p.maxTimeOffset = maxOffset
+	}
 }
 
-func (p Planner) WithTimeWindow(minOffset, maxOffset time.Duration) Planner {
-	p.minTimeOffset = minOffset
-	p.maxTimeOffset = maxOffset
+func NewPlanner(notAfter time.Time, maxDays int, opts ...PlannerOption) Planner {
+	p := Planner{notAfter: notAfter, maxDays: maxDays}
+	for _, opt := range opts {
+		opt(&p)
+	}
 	return p
 }
 
 func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	// Pre-compute window day bounds if configured.
 	var (
 		windowActive bool
 		winStartDay  time.Time
 		winEndDay    time.Time // exclusive
 	)
-	if p.minTimeOffset != 0 || p.maxTimeOffset != 0 { // fall back to relative offsets
+
+	if p.minTimeOffset != 0 || p.maxTimeOffset != 0 {
 		now := time.Now()
 		winStart := now.Add(p.minTimeOffset)
 		winEnd := now.Add(p.maxTimeOffset)
 		if winStart.Before(winEnd) { // valid window
 			windowActive = true
-			winStartDay = util.BeginOfDay(winStart)
-			winEndDay = util.BeginOfDay(winEnd) // exclusive
+			winStartDay = util.NewDate(winStart.Year(), winStart.Month(), winStart.Day()).ToTime()
+			winEndDay = util.NewDate(winEnd.Year(), winEnd.Month(), winEnd.Day()).ToTime() // exclusive
 		}
 	}
 
@@ -99,6 +109,7 @@ func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[strin
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquetMetas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+			// Apply same window filtering for existing parquet coverage when active.
 			if windowActive {
 				pt := partialDate.ToTime()
 				if pt.Before(winStartDay) || !pt.Before(winEndDay) {
