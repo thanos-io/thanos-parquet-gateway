@@ -106,6 +106,8 @@ func (opts *tsdbDiscoveryOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) 
 	cmd.Flag("tsdb.discovery.concurrency", "concurrency for loading metadata").Default("1").IntVar(&opts.discoveryConcurrency)
 	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this won't be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
 	MatchersVar(cmd.Flag("tsdb.discovery.select-external-labels", "only external labels matching this selector will be discovered").PlaceHolder("SELECTOR"), &opts.externalLabelMatchers)
+	cmd.Flag("tsdb.discovery.min-time", "relative start offset (e.g. -168h). By default conversion rounds to day start (00:00:00 UTC)").Default("0s").DurationVar(&opts.minTimeOffset)
+	cmd.Flag("tsdb.discovery.max-time", "relative end offset (e.g. -48h). By default conversion rounds to next day start (exclusive)").Default("0s").DurationVar(&opts.maxTimeOffset)
 }
 
 func (opts *apiOpts) registerConvertFlags(cmd *kingpin.CmdClause) {
@@ -158,7 +160,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 						return err
 					}
 					log.Info("Converting next blocks", "sort_by", opts.conversion.sortLabels)
-					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion); err != nil {
+					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion, opts.tsdbDiscover.minTimeOffset, opts.tsdbDiscover.maxTimeOffset); err != nil {
 						log.Error("Unable to convert blocks", "error", err)
 						return err
 					}
@@ -185,6 +187,8 @@ func advanceConversion(
 	tsdbDiscoverer *locate.TSDBDiscoverer,
 	parquetDiscoverer *locate.Discoverer,
 	opts conversionOpts,
+	minTimeOffset time.Duration,
+	maxTimeOffset time.Duration,
 ) error {
 	blkDir := filepath.Join(opts.tempDir, ".blocks")
 	bufferDir := filepath.Join(opts.tempDir, ".buffers")
@@ -199,8 +203,10 @@ func advanceConversion(
 
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
+	// Build planner with optional time window (offsets zero => no filtering).
+	p := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays, convert.WithTimeWindow(minTimeOffset, maxTimeOffset))
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	plan := p.Plan(tsdbMetas, parquetMetas)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil

@@ -226,6 +226,9 @@ type tsdbDiscoveryOpts struct {
 	discoveryMinBlockAge time.Duration
 
 	externalLabelMatchers matcherSlice
+
+	minTimeOffset time.Duration
+	maxTimeOffset time.Duration
 }
 
 func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, opts tsdbDiscoveryOpts) (*locate.TSDBDiscoverer, error) {
