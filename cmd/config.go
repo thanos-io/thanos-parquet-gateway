@@ -226,6 +226,7 @@ type tsdbDiscoveryOpts struct {
 	discoveryMinBlockAge time.Duration
 
 	externalLabelMatchers matcherSlice
+	useDownsampledBlocks  bool
 }
 
 func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, opts tsdbDiscoveryOpts) (*locate.TSDBDiscoverer, error) {
@@ -234,6 +235,7 @@ func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt
 		locate.TSDBMetaConcurrency(opts.discoveryConcurrency),
 		locate.TSDBMinBlockAge(opts.discoveryMinBlockAge),
 		locate.TSDBMatchExternalLabels(opts.externalLabelMatchers...),
+		locate.TSDBUseDownsampledBlocks(opts.useDownsampledBlocks),
 	)
 
 	log.Info("Running initial tsdb discovery")

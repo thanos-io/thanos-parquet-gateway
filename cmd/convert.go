@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +104,7 @@ func (opts *tsdbDiscoveryOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) 
 	cmd.Flag("tsdb.discovery.interval", "interval to discover blocks").Default("30m").DurationVar(&opts.discoveryInterval)
 	cmd.Flag("tsdb.discovery.concurrency", "concurrency for loading metadata").Default("1").IntVar(&opts.discoveryConcurrency)
 	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this won't be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
+	cmd.Flag("tsdb.discovery.use-downsampled", "if true, discover only downsampled (non raw) blocks").Default("false").BoolVar(&opts.useDownsampledBlocks)
 	MatchersVar(cmd.Flag("tsdb.discovery.select-external-labels", "only external labels matching this selector will be discovered").PlaceHolder("SELECTOR"), &opts.externalLabelMatchers)
 }
 
@@ -333,19 +333,6 @@ func cleanupDirectory(dir string) error {
 		return fmt.Errorf("unable to stat block directory: %w", err)
 	}
 	return nil
-}
-
-func overlappingBlocks(blocks []convert.Convertible, date time.Time) []convert.Convertible {
-	res := make([]convert.Convertible, 0)
-	for _, m := range blocks {
-		if date.AddDate(0, 0, 1).UnixMilli() >= m.Meta().MinTime && date.UnixMilli() <= m.Meta().MaxTime {
-			res = append(res, m)
-		}
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].Meta().MaxTime <= res[j].Meta().MaxTime
-	})
-	return res
 }
 
 func ulidsFromMetas(metas []metadata.Meta) []string {

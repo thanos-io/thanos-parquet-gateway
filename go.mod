@@ -5,6 +5,7 @@ go 1.24.2
 require (
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6
 	github.com/KimMachineGun/automemlimit v0.7.3
+	github.com/go-kit/log v0.2.1
 	github.com/google/go-cmp v0.7.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.0.1
 	github.com/json-iterator/go v1.1.12
@@ -26,7 +27,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.36.0
 	google.golang.org/protobuf v1.36.9
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -36,7 +36,6 @@ require (
 	github.com/efficientgo/tools/extkingpin v0.0.0-20230505153745-6b7392939a60 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.32.4 // indirect
 	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
-	github.com/go-kit/log v0.2.1 // indirect
 	github.com/go-openapi/analysis v0.23.0 // indirect
 	github.com/go-openapi/errors v0.22.1 // indirect
 	github.com/go-openapi/jsonpointer v0.21.1 // indirect
@@ -103,6 +102,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go4.org/intern v0.0.0-20230525184215-6c62f75575cb // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
