@@ -214,6 +214,7 @@ type tsdbDiscoveryConfig struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	useDownsampledBlocks  bool
 }
 
 type TSDBDiscoveryOption func(*tsdbDiscoveryConfig)
@@ -236,6 +237,11 @@ func TSDBMinBlockAge(d time.Duration) TSDBDiscoveryOption {
 	}
 }
 
+// TSDBUseDownsampledBlocks controls whether downsampled blocks are discovered.
+func TSDBUseDownsampledBlocks(b bool) TSDBDiscoveryOption {
+	return func(cfg *tsdbDiscoveryConfig) { cfg.useDownsampledBlocks = b }
+}
+
 type TSDBDiscoverer struct {
 	bkt objstore.Bucket
 
@@ -244,6 +250,7 @@ type TSDBDiscoverer struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	useDownsampledBlocks  bool
 
 	concurrency int
 }
@@ -372,10 +379,16 @@ func (s *TSDBDiscoverer) Discover(ctx context.Context) error {
 		return false
 	})
 
-	// filter for metas that are not downsampled
-	maps.DeleteFunc(nm, func(_ string, v metadata.Meta) bool {
-		return v.Thanos.Downsample.Resolution != downsample.ResLevel0
-	})
+	// filter for metas that are not downsampled unless indicated otherwise
+	if s.useDownsampledBlocks {
+		maps.DeleteFunc(nm, func(_ string, v metadata.Meta) bool {
+			return v.Thanos.Downsample.Resolution == downsample.ResLevel0
+		})
+	} else {
+		maps.DeleteFunc(nm, func(_ string, v metadata.Meta) bool {
+			return v.Thanos.Downsample.Resolution != downsample.ResLevel0
+		})
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

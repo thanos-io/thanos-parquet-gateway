@@ -22,12 +22,22 @@ const (
 )
 
 const (
+	// Shared
 	LabelColumnPrefix = "___cf_meta_label_"
 	LabelIndexColumn  = "___cf_meta_index"
 	LabelHashColumn   = "___cf_meta_hash"
-	ChunksColumn0     = "___cf_meta_chunk_0"
-	ChunksColumn1     = "___cf_meta_chunk_1"
-	ChunksColumn2     = "___cf_meta_chunk_2"
+
+	// Non-downsampled
+	ChunksColumn0 = "___cf_meta_chunk_0"
+	ChunksColumn1 = "___cf_meta_chunk_1"
+	ChunksColumn2 = "___cf_meta_chunk_2"
+
+	// Downsampled
+	CountColumn   = "___cf_meta_count"
+	SumColumn     = "___cf_meta_sum"
+	MinColumn     = "___cf_meta_min"
+	MaxColumn     = "___cf_meta_max"
+	CounterColumn = "___cf_meta_counter"
 )
 
 const (
@@ -96,6 +106,24 @@ func BuildSchemaFromLabels(lbls []string) *parquet.Schema {
 	return parquet.NewSchema("tsdb", g)
 }
 
+func BuildDownsampledSchemaFromLabels(lbls []string) *parquet.Schema {
+	g := make(parquet.Group)
+
+	g[LabelIndexColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	g[LabelHashColumn] = parquet.Encoded(parquet.Leaf(parquet.Int64Type), &parquet.Plain)
+
+	for _, lbl := range lbls {
+		g[LabelNameToColumn(lbl)] = parquet.Optional(parquet.Encoded(parquet.String(), &parquet.RLEDictionary))
+	}
+
+	g[CountColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	g[SumColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	g[MinColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	g[MaxColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	g[CounterColumn] = parquet.Encoded(parquet.Leaf(parquet.ByteArrayType), &parquet.DeltaLengthByteArray)
+	return parquet.NewSchema("downsampled", g)
+}
+
 func WithCompression(s *parquet.Schema) *parquet.Schema {
 	g := make(parquet.Group)
 
@@ -108,8 +136,11 @@ func WithCompression(s *parquet.Schema) *parquet.Schema {
 }
 
 var (
-	ChunkColumns = []string{LabelHashColumn, ChunksColumn0, ChunksColumn1, ChunksColumn2}
+	ChunkColumns            = []string{LabelHashColumn, ChunksColumn0, ChunksColumn1, ChunksColumn2}
+	DownsampledChunkColumns = []string{CountColumn, SumColumn, MinColumn, MaxColumn, CounterColumn}
 )
+
+type Projection func(s *parquet.Schema) *parquet.Schema
 
 func ChunkProjection(s *parquet.Schema) *parquet.Schema {
 	g := make(parquet.Group)
@@ -122,6 +153,19 @@ func ChunkProjection(s *parquet.Schema) *parquet.Schema {
 		g[c] = lc.Node
 	}
 	return parquet.NewSchema("chunk-projection", g)
+}
+
+func DownsampledChunkProjection(s *parquet.Schema) *parquet.Schema {
+	g := make(parquet.Group)
+
+	for _, c := range DownsampledChunkColumns {
+		lc, ok := s.Lookup(c)
+		if !ok {
+			continue
+		}
+		g[c] = lc.Node
+	}
+	return parquet.NewSchema("downsampled-chunk-projection", g)
 }
 
 func LabelsProjection(s *parquet.Schema) *parquet.Schema {
@@ -138,6 +182,22 @@ func LabelsProjection(s *parquet.Schema) *parquet.Schema {
 		g[c[0]] = lc.Node
 	}
 	return parquet.NewSchema("labels-projection", g)
+}
+
+func DownsampledLabelsProjection(s *parquet.Schema) *parquet.Schema {
+	g := make(parquet.Group)
+
+	for _, c := range s.Columns() {
+		if slices.Contains(DownsampledChunkColumns, c[0]) {
+			continue
+		}
+		lc, ok := s.Lookup(c...)
+		if !ok {
+			continue
+		}
+		g[c[0]] = lc.Node
+	}
+	return parquet.NewSchema("downsampled-labels-projection", g)
 }
 
 func RemoveNullColumns(p *parquet.File) *parquet.Schema {

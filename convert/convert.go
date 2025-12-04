@@ -68,6 +68,8 @@ type convertOpts struct {
 	labelPageBufferSize int
 	chunkPageBufferSize int
 	writeConcurrency    int
+
+	downsampled bool
 }
 
 func (cfg convertOpts) buildBloomfilterColumns() []parquet.BloomFilterColumn {
@@ -148,6 +150,12 @@ func EncodingConcurrency(c int) ConvertOption {
 func WriteConcurrency(c int) ConvertOption {
 	return func(opts *convertOpts) {
 		opts.writeConcurrency = c
+	}
+}
+
+func Downsampled(b bool) ConvertOption {
+	return func(opts *convertOpts) {
+		opts.downsampled = b
 	}
 }
 
@@ -356,8 +364,26 @@ func shardedIndexRowReader(
 					lbls = append(lbls, l.Name)
 				})
 			}
-			postings := index.NewListPostings(refs)
-			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
+			var seriesSet storage.ChunkSeriesSet
+			if opts.downsampled {
+				compareFunc := func(a, b labels.Labels) int {
+					for _, lb := range opts.sortLabels {
+						if c := strings.Compare(a.Get(lb), b.Get(lb)); c != 0 {
+							return c
+						}
+					}
+					return labels.Compare(a, b)
+				}
+
+				seriesSet, err = buildDownsampledSeriesSet(ctx, indexr, chunkr, tombsr, mint, maxt, compareFunc)
+				if err != nil {
+					return nil, fmt.Errorf("unable to build downsampled series set: %w", err)
+				}
+			} else {
+				postings := index.NewListPostings(refs)
+				seriesSet = tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
+			}
+
 			seriesSets = append(seriesSets, seriesSet)
 		}
 
@@ -366,14 +392,29 @@ func shardedIndexRowReader(
 		)
 
 		slices.Sort(lbls)
-		s := schema.BuildSchemaFromLabels(slices.Compact(lbls))
+
+		var s *parquet.Schema
+		var chunksProjection schema.Projection
+		var labelsProjection schema.Projection
+		if opts.downsampled {
+			s = schema.BuildDownsampledSchemaFromLabels(slices.Compact(lbls))
+			chunksProjection = schema.DownsampledChunkProjection
+			labelsProjection = schema.DownsampledLabelsProjection
+		} else {
+			s = schema.BuildSchemaFromLabels(slices.Compact(lbls))
+			chunksProjection = schema.ChunkProjection
+			labelsProjection = schema.LabelsProjection
+		}
+
 		shardIndexRowReader[shardIdx] = &indexRowReader{
 			ctx:       ctx,
 			seriesSet: mergeSeriesSet,
 			closers:   closers,
 
-			schema:     s,
-			rowBuilder: parquet.NewRowBuilder(s),
+			schema:           s,
+			chunksProjection: chunksProjection,
+			labelsProjection: labelsProjection,
+			rowBuilder:       parquet.NewRowBuilder(s),
 
 			concurrency: opts.encodingConcurrency,
 
@@ -382,6 +423,14 @@ func shardedIndexRowReader(
 			chunksColumn2:    columnIDForKnownColumn(s, schema.ChunksColumn2),
 			labelIndexColumn: columnIDForKnownColumn(s, schema.LabelIndexColumn),
 			labelHashColumn:  columnIDForKnownColumn(s, schema.LabelHashColumn),
+
+			countColumn:   columnIDForKnownColumn(s, schema.CountColumn),
+			sumColumn:     columnIDForKnownColumn(s, schema.SumColumn),
+			minColumn:     columnIDForKnownColumn(s, schema.MinColumn),
+			maxColumn:     columnIDForKnownColumn(s, schema.MaxColumn),
+			counterColumn: columnIDForKnownColumn(s, schema.CounterColumn),
+
+			downsampled: opts.downsampled,
 		}
 	}
 	return shardIndexRowReader, nil
@@ -510,10 +559,9 @@ type converter struct {
 	name       string
 	mint, maxt int64
 
-	shard          int
-	seriesPerShard int
-	rowGroupSize   int
-	numRowGroups   int
+	shard        int
+	rowGroupSize int
+	numRowGroups int
 
 	bkt objstore.Bucket
 
@@ -601,11 +649,11 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 
 	w, err := newSplitFileWriter(ctx, c.bkt, s, map[string]writerConfig{
 		schema.LabelsPfileNameForShard(c.name, c.shard): {
-			s:    schema.WithCompression(schema.LabelsProjection(s)),
+			s:    schema.WithCompression(c.rr.labelsProjection(s)),
 			opts: c.labelWriterOptions(),
 		},
 		schema.ChunksPfileNameForShard(c.name, c.shard): {
-			s:    schema.WithCompression(schema.ChunkProjection(s)),
+			s:    schema.WithCompression(c.rr.chunksProjection(s)),
 			opts: c.chunkWriterOptions(),
 		},
 	},
@@ -623,30 +671,10 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	return true, nil
 }
 
-type limitReader struct {
-	parquet.RowReader
-	limit int
-	cur   int
-}
-
-func (lr *limitReader) ReadRows(buf []parquet.Row) (int, error) {
-	n, err := lr.RowReader.ReadRows(buf)
-	if err != nil {
-		return n, err
-	}
-	lr.cur += n
-
-	if lr.cur > lr.limit {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
 type fileWriter struct {
 	pw   *parquet.GenericWriter[any]
 	conv parquet.Conversion
 	w    io.WriteCloser
-	r    io.ReadCloser
 }
 
 type splitPipeFileWriter struct {
