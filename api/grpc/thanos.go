@@ -14,6 +14,8 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/stats"
 	"google.golang.org/grpc/codes"
@@ -96,7 +98,7 @@ type QueryServer struct {
 	selectChunkPartitionMaxConcurrency int
 }
 
-func (qs *QueryServer) queryable(replicaLabels ...string) storage.Queryable {
+func (qs *QueryServer) queryable(replicaLabels ...string) *db.DBQueryable {
 	return qs.db.Queryable(
 		db.DropReplicaLabels(replicaLabels...),
 		db.SelectChunkBytesQuota(qs.selectChunkBytesQuota),
@@ -285,15 +287,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 }
 
 func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
-	if !request.SkipChunks {
-		return status.Error(codes.Unimplemented, "'series' called without skipping chunks")
-	}
-
-	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.MinTime, request.MaxTime)
-	if err != nil {
-		return status.Error(codes.Internal, err.Error())
-	}
-	defer errcapture.Do(&rerr, q.Close, "querier close")
+	qryable := qs.queryable(request.WithoutReplicaLabels...)
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
@@ -304,16 +298,27 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 		Start: request.MinTime,
 		End:   request.MaxTime,
 		Limit: int(request.Limit),
-		Func:  "series",
+	}
+	if request.SkipChunks {
+		hints.Func = "series"
 	}
 
-	ss := q.Select(srv.Context(), true, hints, ms...)
+	cq, err := qryable.ChunkQuerier(request.MinTime, request.MaxTime)
+	if err != nil {
+		return status.Error(codes.Internal, err.Error())
+	}
+	defer errcapture.Do(&rerr, cq.Close, "chunk querier close")
 
-	i := int64(0)
-	for ss.Next() {
+	css := cq.Select(srv.Context(), true, hints, ms...)
+
+	var (
+		i  = int64(0)
+		it chunks.Iterator
+	)
+	for css.Next() {
 		i++
 
-		series := ss.At()
+		series := css.At()
 
 		if request.Limit > 0 && i > request.Limit {
 			if err := srv.Send(storepb.NewWarnSeriesResponse(warnings.ErrorTruncatedResponse)); err != nil {
@@ -323,24 +328,58 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 		}
 
 		storeSeries := storepb.Series{Labels: zLabelsFromMetric(series.Labels())}
+
+		it = series.Iterator(it)
+		for it.Next() {
+			chk := it.At()
+			if chk.Chunk == nil {
+				continue
+			}
+			storeSeries.Chunks = append(storeSeries.Chunks, storepb.AggrChunk{
+				MinTime: chk.MinTime,
+				MaxTime: chk.MaxTime,
+				Raw: &storepb.Chunk{
+					Type: chunkEncToStoreEnc(chk.Chunk.Encoding()),
+					Data: chk.Chunk.Bytes(),
+				},
+			})
+		}
+		if err := it.Err(); err != nil {
+			return status.Error(codes.Internal, err.Error())
+		}
+
 		if err := srv.Send(storepb.NewSeriesResponse(&storeSeries)); err != nil {
 			return status.Error(codes.Aborted, err.Error())
 		}
 	}
 
-	if err := ss.Err(); err != nil {
+	if err := css.Err(); err != nil {
 		if limits.IsResourceExhausted(err) {
 			return status.Error(codes.ResourceExhausted, err.Error())
 		}
 		return status.Error(codes.Internal, err.Error())
 	}
-	for _, w := range ss.Warnings() {
+	for _, w := range css.Warnings() {
 		if err := srv.Send(storepb.NewWarnSeriesResponse(w)); err != nil {
 			return status.Error(codes.Aborted, err.Error())
 		}
 	}
 
 	return nil
+}
+
+// chunkEncToStoreEnc converts Prometheus chunk encoding to Thanos store chunk encoding.
+func chunkEncToStoreEnc(enc chunkenc.Encoding) storepb.Chunk_Encoding {
+	switch enc {
+	case chunkenc.EncXOR:
+		return storepb.Chunk_XOR
+	case chunkenc.EncHistogram:
+		return storepb.Chunk_HISTOGRAM
+	case chunkenc.EncFloatHistogram:
+		return storepb.Chunk_FLOAT_HISTOGRAM
+	default:
+		panic("unknown chunk encoding")
+	}
 }
 
 func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (_ *storepb.LabelNamesResponse, rerr error) {

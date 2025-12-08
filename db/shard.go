@@ -19,7 +19,6 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
-	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 	"github.com/thanos-io/thanos-parquet-gateway/search"
@@ -56,7 +55,7 @@ func (shd *Shard) Queryable(
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
 	selectHonorProjectionHints bool,
-) storage.Queryable {
+) *ShardQueryable {
 	return &ShardQueryable{
 		extlabels:                          extlabels,
 		replicaLabelNames:                  replicaLabelNames,
@@ -83,7 +82,7 @@ type ShardQueryable struct {
 	shard *Shard
 }
 
-func (q *ShardQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
+func (q *ShardQueryable) Querier(mint, maxt int64) (*ShardQuerier, error) {
 	return &ShardQuerier{
 		mint:                               mint,
 		maxt:                               maxt,
@@ -195,8 +194,8 @@ func matchersToStringSlice(matchers []*labels.Matcher) []string {
 	return res
 }
 
-func (q ShardQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
-	ctx, span := tracing.Tracer().Start(ctx, "Select Shard")
+func (q ShardQuerier) selectCore(ctx context.Context, spanName string, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) ([]search.SeriesChunks, annotations.Annotations, error) {
+	ctx, span := tracing.Tracer().Start(ctx, spanName)
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", sorted))
@@ -233,48 +232,82 @@ func (q ShardQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.
 		matchers...,
 	)
 	if err != nil {
-		return storage.ErrSeriesSet(fmt.Errorf("unable to select: %w", err))
+		return nil, nil, err
 	}
 
-	series, dropped := q.seriesFromSeriesChunks(seriesChunks)
-	if dropped {
-		warns = warns.Add(warnings.ErrorDroppedSeriesAfterExternalLabelMangling)
+	skipChunks := hints.Func == "series"
+
+	// Deduplicate series by label set hash
+	seen := make(map[uint64]struct{})
+	result := seriesChunks[:0]
+	for i := range seriesChunks {
+		if len(seriesChunks[i].Chunks) == 0 && !skipChunks {
+			continue
+		}
+		h := seriesChunks[i].LsetHash
+		if _, ok := seen[h]; ok {
+			// We have seen this series before, skip it for now; we could be smarter and select
+			// chunks appropriately so that we fill in what might be missing but for now skipping is fine
+			warns = warns.Add(warnings.ErrorDroppedSeriesAfterExternalLabelMangling)
+			continue
+		}
+		seen[h] = struct{}{}
+		result = append(result, seriesChunks[i])
 	}
 
 	if sorted {
-		slices.SortFunc(series, func(l, r storage.Series) int { return labels.Compare(l.Labels(), r.Labels()) })
+		slices.SortFunc(result, func(l, r search.SeriesChunks) int {
+			return labels.Compare(l.Lset, r.Lset)
+		})
 	}
+	return result, warns, nil
+}
+
+func (q ShardQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
+	seriesChunks, warns, err := q.selectCore(ctx, "Select Shard", sorted, hints, matchers...)
+	if err != nil {
+		return storage.ErrSeriesSet(fmt.Errorf("unable to select: %w", err))
+	}
+
+	series := q.seriesFromSeriesChunks(seriesChunks)
 	return newWarningsSeriesSet(newConcatSeriesSet(series...), warns)
 }
 
-func (q ShardQuerier) seriesFromSeriesChunks(sc []search.SeriesChunks) ([]storage.Series, bool) {
-	res := make([]storage.Series, 0, len(sc))
-	m := make(map[uint64]struct{})
-	dropped := false
+func (q ShardQuerier) SelectChunks(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	return newLazyChunkSeriesSet(ctx, q.selectChunksFn, sorted, hints, matchers...)
+}
 
+func (q ShardQuerier) selectChunksFn(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	seriesChunks, warns, err := q.selectCore(ctx, "ChunkSelect Shard", sorted, hints, matchers...)
+	if err != nil {
+		return storage.ErrChunkSeriesSet(err)
+	}
+
+	series := q.chunkSeriesFromSeriesChunks(seriesChunks)
+	return newChunkSeriesSet(series, warns)
+}
+
+func (q ShardQuerier) chunkSeriesFromSeriesChunks(sc []search.SeriesChunks) []storage.ChunkSeries {
+	res := make([]storage.ChunkSeries, 0, len(sc))
 	for i := range sc {
-		lbls := sc[i].Lset
-		h := sc[i].LsetHash
-		if _, ok := m[h]; ok {
-			// We have seen this series before, skip it for now; we could be smarter and select
-			// chunks appropriately so that we fill in what might be missing but for now skipping is fine
-			dropped = true
-			continue
-		}
-		m[h] = struct{}{}
+		res = append(res, &storageChunkSeries{
+			lset:   sc[i].Lset,
+			chunks: sc[i].Chunks,
+		})
+	}
+	return res
+}
 
+func (q ShardQuerier) seriesFromSeriesChunks(sc []search.SeriesChunks) []storage.Series {
+	res := make([]storage.Series, 0, len(sc))
+	for i := range sc {
 		ss := &chunkSeries{
-			lset: lbls,
-			mint: q.mint,
-			maxt: q.maxt,
-		}
-		for j := range sc[i].Chunks {
-			if !util.Intersects(q.mint, q.maxt, sc[i].Chunks[j].MinTime, sc[i].Chunks[j].MaxTime) {
-				continue
-			}
-			ss.chunks = append(ss.chunks, sc[i].Chunks[j].Chunk)
+			lset:   sc[i].Lset,
+			mint:   q.mint,
+			maxt:   q.maxt,
+			chunks: sc[i].Chunks,
 		}
 		res = append(res, ss)
 	}
-	return res, dropped
+	return res
 }

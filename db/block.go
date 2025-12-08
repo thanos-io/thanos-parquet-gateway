@@ -50,8 +50,8 @@ func (blk *Block) Queryable(
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
 	selectHonorProjectionHints bool,
-) storage.Queryable {
-	qs := make([]storage.Queryable, 0, len(blk.shards))
+) *BlockQueryable {
+	qs := make([]*ShardQueryable, 0, len(blk.shards))
 	for _, shard := range blk.shards {
 		qs = append(qs, shard.Queryable(
 			extlabels,
@@ -70,25 +70,36 @@ func (blk *Block) Queryable(
 type BlockQueryable struct {
 	extlabels labels.Labels
 
-	shards []storage.Queryable
+	shards []*ShardQueryable
 }
 
 func (q *BlockQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
-	qs := make([]storage.Querier, 0, len(q.shards))
+	qs := make([]*ShardQuerier, 0, len(q.shards))
 	for _, shard := range q.shards {
-		q, err := shard.Querier(mint, maxt)
+		sq, err := shard.Querier(mint, maxt)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get shard querier: %w", err)
 		}
-		qs = append(qs, q)
+		qs = append(qs, sq)
 	}
 	return &BlockQuerier{mint: mint, maxt: maxt, shards: qs}, nil
 }
 
+func (q *BlockQueryable) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
+	qs := make([]*ShardQuerier, 0, len(q.shards))
+	for _, shard := range q.shards {
+		sq, err := shard.Querier(mint, maxt)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get shard querier: %w", err)
+		}
+		qs = append(qs, sq)
+	}
+	return &BlockChunkQuerier{BlockQuerier{mint: mint, maxt: maxt, shards: qs}}, nil
+}
+
 type BlockQuerier struct {
 	mint, maxt int64
-
-	shards []storage.Querier
+	shards     []*ShardQuerier
 }
 
 func (q BlockQuerier) Close() error {
@@ -187,12 +198,44 @@ func (q BlockQuerier) selectFn(ctx context.Context, _ bool, hints *storage.Selec
 	span.SetAttributes(attribute.String("block.maxt", time.UnixMilli(q.maxt).String()))
 
 	sss := make([]storage.SeriesSet, 0, len(q.shards))
-	for _, q := range q.shards {
+	for _, s := range q.shards {
 		// always sort since we need to merge later anyhow
-		sss = append(sss, q.Select(ctx, true, hints, matchers...))
+		sss = append(sss, s.Select(ctx, true, hints, matchers...))
 	}
 	if len(sss) == 0 {
 		return storage.EmptySeriesSet()
 	}
 	return storage.NewMergeSeriesSet(sss, hints.Limit, storage.ChainedSeriesMerge)
+}
+
+type BlockChunkQuerier struct {
+	BlockQuerier
+}
+
+var _ storage.ChunkQuerier = &BlockChunkQuerier{}
+
+func (q *BlockChunkQuerier) Select(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	return newLazyChunkSeriesSet(ctx, q.selectChunksFn, sorted, hints, matchers...)
+}
+
+func (q *BlockChunkQuerier) selectChunksFn(ctx context.Context, _ bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	ctx, span := tracing.Tracer().Start(ctx, "ChunkSelect Block")
+	defer span.End()
+
+	span.SetAttributes(attribute.Bool("sorted", true))
+	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.Int("block.shards", len(q.shards)))
+
+	sss := make([]storage.ChunkSeriesSet, 0, len(q.shards))
+	for _, s := range q.shards {
+		// always sort since we need to merge later anyhow
+		sss = append(sss, s.SelectChunks(ctx, true, hints, matchers...))
+	}
+	if len(sss) == 0 {
+		return storage.EmptyChunkSeriesSet()
+	}
+	if len(sss) == 1 {
+		return sss[0]
+	}
+	return storage.NewMergeChunkSeriesSet(sss, hints.Limit, storage.NewConcatenatingChunkSeriesMerger())
 }

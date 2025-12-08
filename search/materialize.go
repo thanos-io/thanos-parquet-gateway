@@ -32,6 +32,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -313,7 +314,8 @@ func materializeChunks(
 	rgi int,
 	mint int64,
 	maxt int64,
-	rr []rowRange) ([][]chunks.Meta, error) {
+	rr []rowRange,
+) ([][]chunks.Meta, error) {
 	rowCount := totalRows(rr)
 
 	minChunkCol, ok := schema.ChunkColumnIndex(m.Meta, time.UnixMilli(mint))
@@ -326,9 +328,9 @@ func materializeChunks(
 	}
 	rg := m.ChunkPfile.RowGroups()[rgi]
 
-	r := make([][]chunks.Meta, rowCount)
+	numCols := maxChunkCol - minChunkCol + 1
 
-	var mu sync.Mutex
+	perColValues := make([][]parquet.Value, numCols)
 	g, ctx := errgroup.WithContext(ctx)
 	for i := minChunkCol; i <= maxChunkCol; i++ {
 		colName, ok := schema.ChunkColumnName(i)
@@ -339,8 +341,9 @@ func materializeChunks(
 		if !ok {
 			return nil, fmt.Errorf("unable to find chunk column for column name %q", colName)
 		}
+		cci := col.ColumnIndex
+		cc := rg.ColumnChunks()[cci]
 
-		cc := rg.ColumnChunks()[col.ColumnIndex]
 		g.Go(func() error {
 			values, err := materializeChunkColumn(
 				ctx,
@@ -356,31 +359,7 @@ func materializeChunks(
 			if err != nil {
 				return fmt.Errorf("unable to materialize column: %w", err)
 			}
-
-			for j, chkVal := range values {
-				chks := make([]chunks.Meta, 0, 12)
-				bs := chkVal.ByteArray()
-				for len(bs) != 0 {
-					enc := chunkenc.Encoding(binary.BigEndian.Uint32(bs[:4]))
-					bs = bs[4:]
-					cmint := encoding.ZigZagDecode(binary.BigEndian.Uint64(bs[:8]))
-					bs = bs[8:]
-					cmaxt := encoding.ZigZagDecode(binary.BigEndian.Uint64(bs[:8]))
-					bs = bs[8:]
-					l := binary.BigEndian.Uint32(bs[:4])
-					bs = bs[4:]
-					chk, err := chunkenc.FromData(enc, bs[:l])
-					if err != nil {
-						return fmt.Errorf("unable to create chunk from data: %w", err)
-					}
-					chks = append(chks, chunks.Meta{MinTime: cmint, MaxTime: cmaxt, Chunk: chk})
-					bs = bs[l:]
-				}
-
-				mu.Lock()
-				r[j] = append(r[j], chks...)
-				mu.Unlock()
-			}
+			perColValues[i-minChunkCol] = values
 			return nil
 		})
 	}
@@ -389,11 +368,70 @@ func materializeChunks(
 		return nil, fmt.Errorf("unable to process chunks: %w", err)
 	}
 
+	chunkCounts := make([]int, rowCount)
+	totalChunks := 0
+	for _, values := range perColValues {
+		for j, chkVal := range values {
+			for range chunkHeaders(chkVal.ByteArray(), mint, maxt) {
+				chunkCounts[j]++
+				totalChunks++
+			}
+		}
+	}
+
+	backing := make([]chunks.Meta, totalChunks)
+	r := make([][]chunks.Meta, rowCount)
+	offset := 0
 	for i := range r {
-		slices.SortFunc(r[i], func(a, b chunks.Meta) int { return int(a.MinTime - b.MinTime) })
+		r[i] = backing[offset : offset : offset+chunkCounts[i]]
+		offset += chunkCounts[i]
+	}
+
+	for _, values := range perColValues {
+		for j, chkVal := range values {
+			for ch := range chunkHeaders(chkVal.ByteArray(), mint, maxt) {
+				chk, err := chunkenc.FromData(ch.Enc, ch.Data)
+				if err != nil {
+					return nil, fmt.Errorf("unable to create chunk: %w", err)
+				}
+				r[j] = append(r[j], chunks.Meta{MinTime: ch.MinTime, MaxTime: ch.MaxTime, Chunk: chk})
+			}
+		}
 	}
 
 	return r, nil
+}
+
+type chunkHeader struct {
+	MinTime int64
+	MaxTime int64
+	Enc     chunkenc.Encoding
+	Data    []byte
+}
+
+func chunkHeaders(bs []byte, mint, maxt int64) func(yield func(chunkHeader) bool) {
+	return func(yield func(chunkHeader) bool) {
+		offset := 0
+		for offset+24 <= len(bs) {
+			enc := chunkenc.Encoding(binary.BigEndian.Uint32(bs[offset:]))
+			offset += 4
+			cmint := encoding.ZigZagDecode(binary.BigEndian.Uint64(bs[offset:]))
+			offset += 8
+			cmaxt := encoding.ZigZagDecode(binary.BigEndian.Uint64(bs[offset:]))
+			offset += 8
+			l := int(binary.BigEndian.Uint32(bs[offset:]))
+			offset += 4
+			if offset+l > len(bs) {
+				break
+			}
+			if util.Intersects(mint, maxt, cmint, cmaxt) {
+				if !yield(chunkHeader{MinTime: cmint, MaxTime: cmaxt, Enc: enc, Data: bs[offset : offset+l]}) {
+					return
+				}
+			}
+			offset += l
+		}
+	}
 }
 
 func materializeLabelNames(ctx context.Context, meta LabelNamesReadMeta, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {
