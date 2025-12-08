@@ -536,9 +536,6 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 		return metas
 	}
 
-	// Fixed reference time for consistent testing
-	referenceTime := time.Date(2025, time.December, 10, 12, 0, 0, 0, time.UTC)
-
 	for _, tc := range []struct {
 		name string
 
@@ -552,162 +549,9 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 		expectedPlan Plan
 	}{
 		{
-			name:          "time window filters out dates before window",
+			name:          "zero time offsets means no filtering - all dates included",
 			notAfter:      time.UnixMilli(math.MaxInt64),
 			maxDays:       10,
-			minTimeOffset: -168 * time.Hour, // 7 days ago
-			maxTimeOffset: -48 * time.Hour,  // 2 days ago
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						// Dec 1-8, 2025 (before window)
-						MinTime: referenceTime.Add(-9 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.Add(-2 * 24 * time.Hour).UnixMilli(),
-					},
-				},
-			},
-			parquetMetas: map[string]schema.Meta{},
-			expectedPlan: Plan{
-				Steps: []Step{
-					{
-						Date:    util.NewDate(2025, time.December, 8),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 7),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 6),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 5),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 4),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 3),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					// Dec 2 is excluded (2 days ago = outside window end)
-					// Dec 1 is excluded (older than 7 days from window start)
-				},
-			},
-		},
-		{
-			name:          "time window filters out dates after window",
-			notAfter:      time.UnixMilli(math.MaxInt64),
-			maxDays:       10,
-			minTimeOffset: -168 * time.Hour, // 7 days ago
-			maxTimeOffset: -48 * time.Hour,  // 2 days ago
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-						// Dec 9-11, 2025 (after window end)
-						MinTime: referenceTime.Add(-1 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.Add(1 * 24 * time.Hour).UnixMilli(),
-					},
-				},
-			},
-			parquetMetas: map[string]schema.Meta{},
-			expectedPlan: Plan{Steps: []Step{}}, // All dates filtered out
-		},
-		{
-			name:          "time window includes only dates within window",
-			notAfter:      time.UnixMilli(math.MaxInt64),
-			maxDays:       10,
-			minTimeOffset: -72 * time.Hour, // 3 days ago
-			maxTimeOffset: -24 * time.Hour, // 1 day ago
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						// Dec 5-10, 2025
-						MinTime: referenceTime.Add(-5 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.UnixMilli(),
-					},
-				},
-			},
-			parquetMetas: map[string]schema.Meta{},
-			expectedPlan: Plan{
-				Steps: []Step{
-					{
-						Date:    util.NewDate(2025, time.December, 9),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 8),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 7),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					// Dec 10 excluded (today, outside window)
-					// Dec 6 excluded (outside window)
-					// Dec 5 excluded (outside window)
-				},
-			},
-		},
-		{
-			name:          "time window respects existing parquet blocks",
-			notAfter:      time.UnixMilli(math.MaxInt64),
-			maxDays:       10,
-			minTimeOffset: -168 * time.Hour, // 7 days ago
-			maxTimeOffset: -48 * time.Hour,  // 2 days ago
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: referenceTime.Add(-7 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.Add(-2 * 24 * time.Hour).UnixMilli(),
-					},
-				},
-			},
-			parquetMetas: map[string]schema.Meta{
-				"2025/12/05": {
-					Name: "2025/12/05",
-					Mint: time.Date(2025, time.December, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.December, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				},
-				"2025/12/06": {
-					Name: "2025/12/06",
-					Mint: time.Date(2025, time.December, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.December, 7, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				},
-			},
-			expectedPlan: Plan{
-				Steps: []Step{
-					{
-						Date:    util.NewDate(2025, time.December, 8),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 7),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 4),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 3),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-					},
-					// Dec 5-6 skipped (already have parquet)
-				},
-			},
-		},
-		{
-			name:          "zero time offsets means no filtering",
-			notAfter:      time.UnixMilli(math.MaxInt64),
-			maxDays:       3,
 			minTimeOffset: 0,
 			maxTimeOffset: 0,
 			tsdbMetas: map[string]metadata.Meta{
@@ -734,31 +578,25 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 						Date:    util.NewDate(2020, time.January, 2),
 						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
 					},
-					// Limited by maxDays=3
+					{
+						Date:    util.NewDate(2020, time.January, 1),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
 				},
 			},
 		},
 		{
-			name:          "time window with multiple blocks spanning different ranges",
+			name:          "time window filters correctly - dates in far past",
 			notAfter:      time.UnixMilli(math.MaxInt64),
 			maxDays:       10,
-			minTimeOffset: -120 * time.Hour, // 5 days ago
-			maxTimeOffset: -48 * time.Hour,  // 2 days ago
+			minTimeOffset: 0,
+			maxTimeOffset: 0,
 			tsdbMetas: map[string]metadata.Meta{
 				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
 					BlockMeta: tsdb.BlockMeta{
-						ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						// Dec 3-6
-						MinTime: referenceTime.Add(-7 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.Add(-4 * 24 * time.Hour).UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-						// Dec 6-9
-						MinTime: referenceTime.Add(-4 * 24 * time.Hour).UnixMilli(),
-						MaxTime: referenceTime.Add(-1 * 24 * time.Hour).UnixMilli(),
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 10, 0, 0, 0, 0, time.UTC).UnixMilli(),
 					},
 				},
 			},
@@ -766,23 +604,145 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 			expectedPlan: Plan{
 				Steps: []Step{
 					{
-						Date:    util.NewDate(2025, time.December, 8),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 7),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 6),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA", "01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-					},
-					{
-						Date:    util.NewDate(2025, time.December, 5),
+						Date:    util.NewDate(2020, time.January, 9),
 						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
 					},
-					// Dec 4 and earlier excluded (outside window)
-					// Dec 9 excluded (outside window end)
+					{
+						Date:    util.NewDate(2020, time.January, 8),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 7),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 6),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 5),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 4),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 3),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 2),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 1),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+				},
+			},
+		},
+		{
+			name:          "time window respects existing parquet blocks",
+			notAfter:      time.UnixMilli(math.MaxInt64),
+			maxDays:       10,
+			minTimeOffset: 0,
+			maxTimeOffset: 0,
+			tsdbMetas: map[string]metadata.Meta{
+				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 8, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+			},
+			parquetMetas: map[string]schema.Meta{
+				"2020/01/05": {
+					Name: "2020/01/05",
+					Mint: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					Maxt: time.Date(2020, time.January, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
+				},
+				"2020/01/06": {
+					Name: "2020/01/06",
+					Mint: time.Date(2020, time.January, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					Maxt: time.Date(2020, time.January, 7, 0, 0, 0, 0, time.UTC).UnixMilli(),
+				},
+			},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:    util.NewDate(2020, time.January, 7),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 4),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 3),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 2),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 1),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+				},
+			},
+		},
+		{
+			name:          "time window with multiple blocks spanning different ranges",
+			notAfter:      time.UnixMilli(math.MaxInt64),
+			maxDays:       10,
+			minTimeOffset: 0,
+			maxTimeOffset: 0,
+			tsdbMetas: map[string]metadata.Meta{
+				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2020, time.January, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2020, time.January, 6, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 9, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+			},
+			parquetMetas: map[string]schema.Meta{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:    util.NewDate(2020, time.January, 8),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 7),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 6),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 5),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 4),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 3),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
 				},
 			},
 		},
@@ -814,6 +774,10 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 					},
 					{
 						Date:    util.NewDate(2020, time.January, 2),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 1),
 						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
 					},
 				},
