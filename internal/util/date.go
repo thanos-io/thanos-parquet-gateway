@@ -5,6 +5,7 @@
 package util
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -12,6 +13,15 @@ func NewDate(y int, m time.Month, d int) Date {
 	return Date{
 		t: time.Date(y, m, d, 0, 0, 0, 0, time.UTC),
 	}
+}
+
+// DateFromString parses a date string in "YYYY/MM/DD" format.
+func DateFromString(s string) (Date, error) {
+	t, err := time.Parse("2006/01/02", s)
+	if err != nil {
+		return Date{}, fmt.Errorf("invalid date format %q: %w", s, err)
+	}
+	return Date{t: t}, nil
 }
 
 type Date struct {
