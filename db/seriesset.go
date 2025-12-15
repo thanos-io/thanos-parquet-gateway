@@ -53,6 +53,7 @@ func toStorageHints(h hints) *storage.SelectHints {
 }
 
 type selectFn func(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.SeriesSet
+type chunkSelectFn func(context.Context, bool, *storage.SelectHints, ...*labels.Matcher) storage.ChunkSeriesSet
 
 func newLazySeriesSet(ctx context.Context, selectFn selectFn, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
 	res := &lazySeriesSet{
@@ -146,4 +147,86 @@ func newWarningsSeriesSet(ss storage.SeriesSet, warns annotations.Annotations) s
 func (ss *warningsSeriesSet) Warnings() annotations.Annotations {
 	original := ss.SeriesSet.Warnings()
 	return original.Merge(ss.warns)
+}
+
+func newLazyChunkSeriesSet(ctx context.Context, selectFn chunkSelectFn, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	res := &lazyChunkSeriesSet{
+		selectfn: selectFn,
+		ctx:      ctx,
+		sorted:   sorted,
+		hints:    fromStorageHints(hints),
+		matchers: matchers,
+		done:     make(chan struct{}),
+	}
+	go res.init()
+
+	return res
+}
+
+type lazyChunkSeriesSet struct {
+	selectfn chunkSelectFn
+	ctx      context.Context
+	sorted   bool
+	hints    hints
+	matchers []*labels.Matcher
+
+	set storage.ChunkSeriesSet
+
+	once sync.Once
+	done chan struct{}
+}
+
+func (c *lazyChunkSeriesSet) init() {
+	c.once.Do(func() {
+		c.set = c.selectfn(c.ctx, c.sorted, toStorageHints(c.hints), c.matchers...)
+		close(c.done)
+	})
+}
+
+func (c *lazyChunkSeriesSet) Next() bool {
+	<-c.done
+	return c.set.Next()
+}
+
+func (c *lazyChunkSeriesSet) Err() error {
+	<-c.done
+	return c.set.Err()
+}
+
+func (c *lazyChunkSeriesSet) At() storage.ChunkSeries {
+	<-c.done
+	return c.set.At()
+}
+
+func (c *lazyChunkSeriesSet) Warnings() annotations.Annotations {
+	<-c.done
+	return c.set.Warnings()
+}
+
+// chunkSeriesSet implements storage.ChunkSeriesSet.
+type chunkSeriesSet struct {
+	series []storage.ChunkSeries
+	i      int
+	warns  annotations.Annotations
+}
+
+func newChunkSeriesSet(series []storage.ChunkSeries, warns annotations.Annotations) storage.ChunkSeriesSet {
+	return &chunkSeriesSet{series: series, i: -1, warns: warns}
+}
+
+func (ss *chunkSeriesSet) Next() bool {
+	ss.i++
+	return ss.i < len(ss.series)
+}
+
+func (ss *chunkSeriesSet) At() storage.ChunkSeries {
+	return ss.series[ss.i]
+}
+
+func (ss *chunkSeriesSet) Err() error {
+	return nil
+}
+
+func (ss *chunkSeriesSet) Warnings() annotations.Annotations {
+	return ss.warns
 }
