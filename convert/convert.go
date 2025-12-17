@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -317,7 +318,7 @@ func shardedIndexRowReader(
 		// in order for the prometheus block reader to not hang indefinitely when closed.
 		closers := make([]io.Closer, 0, len(shardSeries)*3)
 		seriesSets := make([]storage.ChunkSeriesSet, 0, len(blocks))
-		var lbls = make([]string, 0)
+		labelNames := make(map[string]struct{})
 
 		// For each block with series in the shard,
 		// init readers and postings list required to create a tsdb.blockChunkSeriesSet;
@@ -353,7 +354,7 @@ func shardedIndexRowReader(
 			for _, series := range blockSeries {
 				refs = append(refs, series.ref)
 				series.labels.Range(func(l labels.Label) {
-					lbls = append(lbls, l.Name)
+					labelNames[l.Name] = struct{}{}
 				})
 			}
 			postings := index.NewListPostings(refs)
@@ -365,8 +366,7 @@ func shardedIndexRowReader(
 			seriesSets, compareBySortedLabelsFunc(opts.sortLabels), storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge),
 		)
 
-		slices.Sort(lbls)
-		s := schema.BuildSchemaFromLabels(slices.Compact(lbls))
+		s := schema.BuildSchemaFromLabels(slices.Sorted(maps.Keys(labelNames)))
 		shardIndexRowReader[shardIdx] = &indexRowReader{
 			ctx:       ctx,
 			seriesSet: mergeSeriesSet,
