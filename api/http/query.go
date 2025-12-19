@@ -56,6 +56,9 @@ type queryAPI struct {
 	selectChunkPartitionMaxRange       units.Base2Bytes
 	selectChunkPartitionMaxGap         units.Base2Bytes
 	selectChunkPartitionMaxConcurrency int
+	labelValuesRowCountQuota           int64
+	labelNamesRowCountQuota            int64
+	shardCountQuota                    int64
 }
 
 type QueryAPIOption func(*queryAPI)
@@ -111,6 +114,24 @@ func SelectChunkPartitionMaxGap(v units.Base2Bytes) QueryAPIOption {
 func SelectChunkPartitionMaxConcurrency(n int) QueryAPIOption {
 	return func(qapi *queryAPI) {
 		qapi.selectChunkPartitionMaxConcurrency = n
+	}
+}
+
+func LabelValuesRowCountQuota(n int64) QueryAPIOption {
+	return func(qapi *queryAPI) {
+		qapi.labelValuesRowCountQuota = n
+	}
+}
+
+func LabelNamesRowCountQuota(n int64) QueryAPIOption {
+	return func(qapi *queryAPI) {
+		qapi.labelNamesRowCountQuota = n
+	}
+}
+
+func ShardCountQuota(n int64) QueryAPIOption {
+	return func(qapi *queryAPI) {
+		qapi.shardCountQuota = n
 	}
 }
 
@@ -358,6 +379,9 @@ func (qapi *queryAPI) queryable() storage.Queryable {
 		db.SelectChunkPartitionMaxRange(qapi.selectChunkPartitionMaxRange),
 		db.SelectChunkPartitionMaxGap(qapi.selectChunkPartitionMaxGap),
 		db.SelectChunkPartitionMaxConcurrency(qapi.selectChunkPartitionMaxConcurrency),
+		db.LabelValuesRowCountQuota(qapi.labelValuesRowCountQuota),
+		db.LabelNamesRowCountQuota(qapi.labelNamesRowCountQuota),
+		db.ShardCountQuota(qapi.shardCountQuota),
 	)
 }
 
@@ -558,6 +582,10 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			return
+		}
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
 		return
 	}
@@ -649,6 +677,10 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			return
+		}
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
 		return
 	}
@@ -738,6 +770,10 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			return
+		}
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
 		return
 	}

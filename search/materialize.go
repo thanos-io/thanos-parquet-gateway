@@ -435,6 +435,10 @@ func chunkHeaders(bs []byte, mint, maxt int64) func(yield func(chunkHeader) bool
 }
 
 func materializeLabelNames(ctx context.Context, meta LabelNamesReadMeta, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {
+	if err := checkRowQuota(meta.RowCountQuota, rr); err != nil {
+		return nil, nil, err
+	}
+
 	switch v := meta.Meta.Version; v {
 	case schema.V0:
 		return materializeLabelNamesV0(ctx, meta, rgi, rr)
@@ -532,6 +536,12 @@ func materializeLabelNamesV1(ctx context.Context, meta LabelNamesReadMeta, rgi i
 }
 
 func materializeLabelValues(ctx context.Context, meta LabelValuesReadMeta, name string, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {
+	var annos annotations.Annotations
+
+	if err := checkRowQuota(meta.RowCountQuota, rr); err != nil {
+		return nil, annos, err
+	}
+
 	switch v := meta.Meta.Version; v {
 	case schema.V0, schema.V1, schema.V2:
 		return materializeLabelValuesV0V1(ctx, meta, name, rgi, rr)
