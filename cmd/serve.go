@@ -98,6 +98,7 @@ func (opts *queryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("query.step", "default step for range queries").Default("30s").DurationVar(&opts.defaultStep)
 	cmd.Flag("query.lookback", "default lookback for queries").Default("5m").DurationVar(&opts.defaultLookback)
 	cmd.Flag("query.timeout", "default timeout for queries").Default("30s").DurationVar(&opts.defaultTimeout)
+	cmd.Flag("query.engine.timeout", "max query timeout for the engine").Default("5m").DurationVar(&opts.engineTimeout)
 	cmd.Flag("query.external-label", "external label to add to results").StringMapVar(&opts.externalLabels)
 	cmd.Flag("query.limits.max-shard-count", "the amount of shards a query can touch in all operations. (0 is unlimited)").Default("0").Int64Var(&opts.shardCountQuota)
 	cmd.Flag("query.limits.select.max-chunk-bytes", "the amount of chunk bytes a query can fetch in 'Select' operations. (0B is unlimited)").Default("0B").BytesVar(&opts.selectChunkBytesQuota)
@@ -177,15 +178,16 @@ type queryOpts struct {
 	defaultStep     time.Duration
 	defaultLookback time.Duration
 	defaultTimeout  time.Duration
+	engineTimeout   time.Duration
 	externalLabels  map[string]string
 
 	// Limits
+	shardCountQuota          int64
 	selectChunkBytesQuota    units.Base2Bytes
 	selectRowCountQuota      int64
-	concurrentQueryQuota     int
-	shardCountQuota          int64
 	labelValuesRowCountQuota int64
 	labelNamesRowCountQuota  int64
+	concurrentQueryQuota     int
 
 	// Storage
 	selectChunkPartitionMaxRange       units.Base2Bytes
@@ -204,7 +206,7 @@ func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 			Logger:                   nil,
 			Reg:                      nil,
 			MaxSamples:               10_000_000,
-			Timeout:                  opts.defaultTimeout,
+			Timeout:                  opts.engineTimeout,
 			NoStepSubqueryIntervalFn: func(int64) int64 { return time.Minute.Milliseconds() },
 			EnableAtModifier:         true,
 			EnableNegativeOffset:     true,
