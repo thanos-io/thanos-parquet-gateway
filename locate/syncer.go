@@ -239,6 +239,8 @@ func fileReaderFromContext(f *os.File) func(context.Context) io.ReaderAt {
 	}
 }
 
+// NOTE: this code is horrible, we need to move management of the actual parquet files out of syncer and into its own
+// data structure.
 func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, cfg blockConfig) (s *db.Shard, err error) {
 	chunkspfile := schema.ChunksPfileNameForShard(m.Name, i)
 	attrs, err := bkt.Attributes(ctx, chunkspfile)
@@ -277,66 +279,78 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 	if stat, err := os.Stat(labelspfilePath); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("unable to stat label parquet file %q from disk: %w", labelspfile, err)
-			// file didn't exist - we need to download and save it to disk
 		}
 	} else {
 		f, err := os.Open(labelspfilePath)
 		if err != nil {
 			return nil, fmt.Errorf("unable to open label parquet file %q: %w", labelspfile, err)
 		}
+		// TODO: we are reading this file in the shard so it needs to stay open for the lifetime of the shard
+		// for now this slowly leaks FDs since we cannot close it - this will be fixed soon when we move management
+		// of parquet files into a tiered cache and out of syncer.
+
 		labelspf, err := parquet.OpenFile(f, stat.Size())
 		if err != nil {
 			syncCorruptedLabelFile.Add(1)
-			rerr := fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
-			if cerr := f.Close(); cerr != nil {
-				return nil, errors.Join(rerr, fmt.Errorf("unable to close label parquet file %q: %w", labelspfile, cerr))
-			}
-			return nil, rerr
+			f.Close()
+			return nil, fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
 		}
 		chunkspfWithRdr, err := schema.NewFileWithReader(chunkspf, bktRdrAtFromCtx)
 		if err != nil {
+			f.Close()
 			return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
 		}
 		labelspfWithRdr, err := schema.NewFileWithReader(labelspf, fileReaderFromContext(f))
 		if err != nil {
+			f.Close()
 			return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
 		}
 		return db.NewShard(m, chunkspfWithRdr, labelspfWithRdr), nil
 	}
+	// file didn't exist or stat errored - we need to download and save it to disk
 	rdr, err := bkt.Get(ctx, labelspfile)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get %q: %w", labelspfile, err)
 	}
-	defer errcapture.Do(&err, rdr.Close, "labels parquet file close")
+	defer errcapture.Do(&err, rdr.Close, "labels parquet objstore reader close")
 
 	f, err := os.Create(labelspfilePath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create label parquet file %q on disk: %w", labelspfile, err)
 	}
-	defer errcapture.Do(&err, f.Close, "labels parquet file close")
+	// TODO: we are reading this file in the shard so it needs to stay open for the lifetime of the shard
+	// for now this slowly leaks FDs since we cannot close it - this will be fixed soon when we move management
+	// of parquet files into a tiered cache and out of syncer.
+	//defer errcapture.Do(&err, f.Close, "labels parquet file close")
 
 	n, err := io.Copy(f, rdr)
 	if err != nil {
+		f.Close()
 		return nil, fmt.Errorf("unable to copy label parquet file %q to disk: %w", labelspfile, err)
 	}
 	if err := f.Sync(); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("unable to sync label parquet file %q: %w", labelspfile, err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("unable to seek label parquet file %q: %w", labelspfile, err)
 	}
 
 	labelspf, err := parquet.OpenFile(f, n)
 	if err != nil {
 		syncCorruptedLabelFile.Add(1)
+		f.Close()
 		return nil, fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
 	}
 	chunkspfWithRdr, err := schema.NewFileWithReader(chunkspf, bktRdrAtFromCtx)
 	if err != nil {
+		f.Close()
 		return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
 	}
 	labelspfWithRdr, err := schema.NewFileWithReader(labelspf, fileReaderFromContext(f))
 	if err != nil {
+		f.Close()
 		return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
 	}
 	return db.NewShard(m, chunkspfWithRdr, labelspfWithRdr), nil
