@@ -176,7 +176,10 @@ func LabelValues(
 			}
 			cc := rg.ColumnChunks()[lc.ColumnIndex].(*parquet.FileColumnChunk)
 
-			dictOffset, dictSize := f.DictionaryPageBounds(i, lc.ColumnIndex)
+			dictOffset, dictSize, ok := f.DictionaryPageBounds(i, lc.ColumnIndex)
+			if !ok {
+				continue
+			}
 			bufRdrAt, err := newBufferedReaderAt(f.Reader(ctx), int64(dictOffset), int64(dictOffset)+int64(dictSize))
 			if err != nil {
 				return nil, nil, fmt.Errorf("unable to create buffered reader: %w", err)

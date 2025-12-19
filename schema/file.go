@@ -31,7 +31,10 @@ func (f *FileWithReader) Reader(ctx context.Context) io.ReaderAt {
 	return f.rdrCtx(ctx)
 }
 
-func (f *FileWithReader) DictionaryPageBounds(rgIdx, colIdx int) (uint64, uint64) {
+func (f *FileWithReader) DictionaryPageBounds(rgIdx, colIdx int) (offset uint64, size uint64, ok bool) {
 	colMeta := f.f.Metadata().RowGroups[rgIdx].Columns[colIdx].MetaData
-	return uint64(colMeta.DictionaryPageOffset), uint64(colMeta.DataPageOffset - colMeta.DictionaryPageOffset)
+	if colMeta.DictionaryPageOffset <= 0 {
+		return 0, 0, false
+	}
+	return uint64(colMeta.DictionaryPageOffset), uint64(colMeta.DataPageOffset - colMeta.DictionaryPageOffset), true
 }

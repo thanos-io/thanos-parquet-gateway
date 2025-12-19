@@ -391,14 +391,15 @@ func (ec *equalConstraint) filter(ctx context.Context, f *schema.FileWithReader,
 		return intersectRowRanges(simplify(res), rr), nil
 	}
 
-	dictOffset, dictSize := f.DictionaryPageBounds(rgi, col.ColumnIndex)
 	minOffset := uint64(oidx.Offset(readPgs[0].idx))
 	maxOffset := uint64(oidx.Offset(readPgs[len(readPgs)-1].idx)) + uint64(oidx.CompressedPageSize(readPgs[len(readPgs)-1].idx))
 
 	// if the dictionary page is close enough to the interesting range we coalesce the read
 	// if not then we end up reading it sequentially
-	if minOffset-(dictOffset+dictSize) < coalesceableLabelsGap {
-		minOffset = dictOffset
+	if dictOffset, dictSize, ok := f.DictionaryPageBounds(rgi, col.ColumnIndex); ok {
+		if minOffset-(dictOffset+dictSize) < coalesceableLabelsGap {
+			minOffset = dictOffset
+		}
 	}
 
 	bufRdrAt, err := newBufferedReaderAt(f.Reader(ctx), int64(minOffset), int64(maxOffset))
@@ -717,14 +718,15 @@ func (rc *regexConstraint) filter(ctx context.Context, f *schema.FileWithReader,
 		return intersectRowRanges(simplify(res), rr), nil
 	}
 
-	dictOffset, dictSize := f.DictionaryPageBounds(rgi, col.ColumnIndex)
 	minOffset := uint64(oidx.Offset(readPgs[0].idx))
 	maxOffset := uint64(oidx.Offset(readPgs[len(readPgs)-1].idx)) + uint64(oidx.CompressedPageSize(readPgs[len(readPgs)-1].idx))
 
 	// if the dictionary page is close enough to the interesting range we coalesce the read
 	// if not then we end up reading it sequentially
-	if minOffset-(dictOffset+dictSize) < coalesceableLabelsGap {
-		minOffset = dictOffset
+	if dictOffset, dictSize, ok := f.DictionaryPageBounds(rgi, col.ColumnIndex); ok {
+		if minOffset-(dictOffset+dictSize) < coalesceableLabelsGap {
+			minOffset = dictOffset
+		}
 	}
 
 	bufRdrAt, err := newBufferedReaderAt(f.Reader(ctx), int64(minOffset), int64(maxOffset))
