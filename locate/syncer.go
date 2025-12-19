@@ -5,7 +5,6 @@
 package locate
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
-	"github.com/prometheus/prometheus/tsdb/fileutil"
 	"github.com/thanos-io/objstore"
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
@@ -235,9 +233,9 @@ func bucketReaderFromContext(bkt objstore.Bucket, name string) func(context.Cont
 	}
 }
 
-func mmapReaderFromContext(f *fileutil.MmapFile) func(context.Context) io.ReaderAt {
+func fileReaderFromContext(f *os.File) func(context.Context) io.ReaderAt {
 	return func(_ context.Context) io.ReaderAt {
-		return f.File()
+		return f
 	}
 }
 
@@ -282,16 +280,16 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 			// file didn't exist - we need to download and save it to disk
 		}
 	} else {
-		f, err := fileutil.OpenMmapFileWithSize(labelspfilePath, int(stat.Size()))
+		f, err := os.Open(labelspfilePath)
 		if err != nil {
-			return nil, fmt.Errorf("unable to mmap label parquet file %q: %w", labelspfile, err)
+			return nil, fmt.Errorf("unable to open label parquet file %q: %w", labelspfile, err)
 		}
-		labelspf, err := parquet.OpenFile(bytes.NewReader(f.Bytes()), stat.Size())
+		labelspf, err := parquet.OpenFile(f, stat.Size())
 		if err != nil {
 			syncCorruptedLabelFile.Add(1)
 			rerr := fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
 			if cerr := f.Close(); cerr != nil {
-				return nil, errors.Join(rerr, fmt.Errorf("unable to close memory mapped parquet file %q: %w", labelspfile, cerr))
+				return nil, errors.Join(rerr, fmt.Errorf("unable to close label parquet file %q: %w", labelspfile, cerr))
 			}
 			return nil, rerr
 		}
@@ -299,7 +297,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 		if err != nil {
 			return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
 		}
-		labelspfWithRdr, err := schema.NewFileWithReader(labelspf, mmapReaderFromContext(f))
+		labelspfWithRdr, err := schema.NewFileWithReader(labelspf, fileReaderFromContext(f))
 		if err != nil {
 			return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
 		}
@@ -322,27 +320,22 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 		return nil, fmt.Errorf("unable to copy label parquet file %q to disk: %w", labelspfile, err)
 	}
 	if err := f.Sync(); err != nil {
-		return nil, fmt.Errorf("unable to close label parquet file %q: %w", labelspfile, err)
+		return nil, fmt.Errorf("unable to sync label parquet file %q: %w", labelspfile, err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("unable to seek label parquet file %q: %w", labelspfile, err)
 	}
 
-	mf, err := fileutil.OpenMmapFileWithSize(labelspfilePath, int(n))
-	if err != nil {
-		return nil, fmt.Errorf("unable to mmap label parquet file %q: %w", labelspfile, err)
-	}
-	labelspf, err := parquet.OpenFile(bytes.NewReader(mf.Bytes()), int64(n))
+	labelspf, err := parquet.OpenFile(f, n)
 	if err != nil {
 		syncCorruptedLabelFile.Add(1)
-		rerr := fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
-		if cerr := f.Close(); cerr != nil {
-			return nil, errors.Join(rerr, fmt.Errorf("unable to close memory mapped parquet file %q: %w", labelspfile, cerr))
-		}
-		return nil, rerr
+		return nil, fmt.Errorf("unable to read label parquet file %q: %w", labelspfile, err)
 	}
 	chunkspfWithRdr, err := schema.NewFileWithReader(chunkspf, bktRdrAtFromCtx)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
 	}
-	labelspfWithRdr, err := schema.NewFileWithReader(labelspf, mmapReaderFromContext(mf))
+	labelspfWithRdr, err := schema.NewFileWithReader(labelspf, fileReaderFromContext(f))
 	if err != nil {
 		return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
 	}
