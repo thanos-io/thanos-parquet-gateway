@@ -18,8 +18,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alecthomas/units"
 	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
+	"github.com/thanos-io/thanos/pkg/pool"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/errgroup"
 
@@ -125,12 +127,12 @@ func materializeLabelsV0(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 
 	metricNameColumn := schema.LabelNameToColumn(labels.MetricName)
 
-	lc, ok := m.LabelPfile.Schema().Lookup(metricNameColumn)
+	lc, ok := m.LabelPfile.File().Schema().Lookup(metricNameColumn)
 	if !ok {
 		return nil, fmt.Errorf("unable to to find column %q", metricNameColumn)
 	}
 
-	rg := m.LabelPfile.RowGroups()[rgi]
+	rg := m.LabelPfile.File().RowGroups()[rgi]
 
 	cc := rg.ColumnChunks()[lc.ColumnIndex]
 	metricNames, err := materializeLabelColumn(ctx, rg, cc, rr)
@@ -148,7 +150,7 @@ func materializeLabelsV0(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 		if _, ok := seen[key]; !ok {
 			cols := m.Meta.ColumnsForName[key]
 			for _, c := range cols {
-				lc, ok := m.LabelPfile.Schema().Lookup(c)
+				lc, ok := m.LabelPfile.File().Schema().Lookup(c)
 				if !ok {
 					continue
 				}
@@ -177,7 +179,7 @@ func materializeLabelsV0(ctx context.Context, m SelectReadMeta, rgi int, rr []ro
 
 	builders := make([]labels.Builder, rowCount)
 	for cIdx, values := range colsMap {
-		colName := m.LabelPfile.Schema().Columns()[cIdx][0]
+		colName := m.LabelPfile.File().Schema().Columns()[cIdx][0]
 		labelName := schema.ColumnToLabelName(colName)
 
 		for i, value := range *values {
@@ -195,15 +197,15 @@ func materializeLabelsV1(ctx context.Context, h *storage.SelectHints, m SelectRe
 	// TODO: refactor this maybe? interleaving "useProjections" with normal materialization is a bit ugly...
 
 	rowCount := totalRows(rr)
-	s := m.LabelPfile.Schema()
+	s := m.LabelPfile.File().Schema()
 
 	// We only use projections for inclusive cases, as in we know what labels to add, not
 	// what labels to take away. We also only use them if the shards we use for the query
 	// all support them.
 	useProjections := m.HonorProjectionHints && h.ProjectionInclude
 
-	lrg := m.LabelPfile.RowGroups()[rgi]
-	crg := m.ChunkPfile.RowGroups()[rgi]
+	lrg := m.LabelPfile.File().RowGroups()[rgi]
+	crg := m.ChunkPfile.File().RowGroups()[rgi]
 
 	colsMap := make(map[int]*[]parquet.Value, 10)
 	if useProjections {
@@ -261,7 +263,7 @@ func materializeLabelsV1(ctx context.Context, h *storage.SelectHints, m SelectRe
 	if useProjections {
 		g.Go(func() error {
 			// NOTE: label hash is persisted into the chunk file because its a bigger column
-			col, ok := m.ChunkPfile.Schema().Lookup(schema.LabelHashColumn)
+			col, ok := m.ChunkPfile.File().Schema().Lookup(schema.LabelHashColumn)
 			if !ok {
 				return fmt.Errorf("unable to to find label hash column %q", schema.LabelHashColumn)
 			}
@@ -273,7 +275,7 @@ func materializeLabelsV1(ctx context.Context, h *storage.SelectHints, m SelectRe
 				crg,
 				cc,
 				rr,
-				withReaderFromContext(m.ChunkFileReaderFromContext),
+				withReaderFromContext(m.ChunkPfile.Reader),
 			)
 			if err != nil {
 				return fmt.Errorf("unable to materialize hash values: %w", err)
@@ -326,7 +328,7 @@ func materializeChunks(
 	if !ok {
 		return nil, errors.New("unable to find max chunk column")
 	}
-	rg := m.ChunkPfile.RowGroups()[rgi]
+	rg := m.ChunkPfile.File().RowGroups()[rgi]
 
 	numCols := maxChunkCol - minChunkCol + 1
 
@@ -351,7 +353,7 @@ func materializeChunks(
 				cc,
 				rr,
 				withByteQuota(m.ChunkBytesQuota),
-				withReaderFromContext(m.ChunkFileReaderFromContext),
+				withReaderFromContext(m.ChunkPfile.Reader),
 				withPartitionMaxRangeSize(m.ChunkPagePartitionMaxRange),
 				withPartitionMaxGapSize(m.ChunkPagePartitionMaxGap),
 				withPartitionMaxConcurrency(m.ChunkPagePartitionMaxConcurrency),
@@ -450,12 +452,12 @@ func materializeLabelNamesV0(ctx context.Context, meta LabelNamesReadMeta, rgi i
 
 	metricNameColumn := schema.LabelNameToColumn(labels.MetricName)
 
-	lc, ok := meta.LabelPfile.Schema().Lookup(metricNameColumn)
+	lc, ok := meta.LabelPfile.File().Schema().Lookup(metricNameColumn)
 	if !ok {
 		return nil, annos, fmt.Errorf("unable to to find column %q", metricNameColumn)
 	}
 
-	rg := meta.LabelPfile.RowGroups()[rgi]
+	rg := meta.LabelPfile.File().RowGroups()[rgi]
 
 	cc := rg.ColumnChunks()[lc.ColumnIndex]
 	metricNames, err := materializeLabelColumn(ctx, rg, cc, rr)
@@ -470,7 +472,7 @@ func materializeLabelNamesV0(ctx context.Context, meta LabelNamesReadMeta, rgi i
 		if _, ok := seen[key]; !ok {
 			cols := meta.Meta.ColumnsForName[key]
 			for _, c := range cols {
-				lc, ok := meta.LabelPfile.Schema().Lookup(c)
+				lc, ok := meta.LabelPfile.File().Schema().Lookup(c)
 				if !ok {
 					continue
 				}
@@ -480,7 +482,7 @@ func materializeLabelNamesV0(ctx context.Context, meta LabelNamesReadMeta, rgi i
 		seen[key] = struct{}{}
 	}
 
-	cols := meta.LabelPfile.Schema().Columns()
+	cols := meta.LabelPfile.File().Schema().Columns()
 
 	res := make([]string, 0, len(colIdxs))
 	for k := range colIdxs {
@@ -493,12 +495,12 @@ func materializeLabelNamesV0(ctx context.Context, meta LabelNamesReadMeta, rgi i
 func materializeLabelNamesV1(ctx context.Context, meta LabelNamesReadMeta, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {
 	var annos annotations.Annotations
 
-	lc, ok := meta.LabelPfile.Schema().Lookup(schema.LabelIndexColumn)
+	lc, ok := meta.LabelPfile.File().Schema().Lookup(schema.LabelIndexColumn)
 	if !ok {
 		return nil, annos, fmt.Errorf("unable to to find label index column %q", schema.LabelIndexColumn)
 	}
 
-	rg := meta.LabelPfile.RowGroups()[rgi]
+	rg := meta.LabelPfile.File().RowGroups()[rgi]
 
 	cc := rg.ColumnChunks()[lc.ColumnIndex]
 	colsIdxs, err := materializeLabelColumn(ctx, rg, cc, rr)
@@ -522,7 +524,7 @@ func materializeLabelNamesV1(ctx context.Context, meta LabelNamesReadMeta, rgi i
 		}
 	}
 
-	cols := meta.LabelPfile.Schema().Columns()
+	cols := meta.LabelPfile.File().Schema().Columns()
 
 	res := make([]string, 0, len(colIdxs))
 	for k := range colIdxs {
@@ -543,12 +545,12 @@ func materializeLabelValues(ctx context.Context, meta LabelValuesReadMeta, name 
 func materializeLabelValuesV0V1(ctx context.Context, meta LabelValuesReadMeta, name string, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {
 	var annos annotations.Annotations
 
-	lc, ok := meta.LabelPfile.Schema().Lookup(schema.LabelNameToColumn(name))
+	lc, ok := meta.LabelPfile.File().Schema().Lookup(schema.LabelNameToColumn(name))
 	if !ok {
 		return nil, annos, nil
 	}
 
-	rg := meta.LabelPfile.RowGroups()[rgi]
+	rg := meta.LabelPfile.File().RowGroups()[rgi]
 
 	cc := rg.ColumnChunks()[lc.ColumnIndex]
 	vals, err := materializeLabelColumn(ctx, rg, cc, rr)
@@ -707,13 +709,17 @@ func materializeChunkColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 			minOffset := oidx.Offset(p.pages[0])
 			maxOffset := oidx.Offset(p.pages[len(p.pages)-1]) + oidx.CompressedPageSize(p.pages[len(p.pages)-1])
 
-			bufRdrAt := newBufferedReaderAt(rdrAt, minOffset, maxOffset)
+			bufRdrAt, err := newBufferedReaderAt(rdrAt, minOffset, maxOffset)
+			if err != nil {
+				return fmt.Errorf("unable to create buffered reader: %w", err)
+			}
+			defer bufRdrAt.Close()
 
 			pagesRead.WithLabelValues(column, method).Add(float64(len(p.pages)))
 			pagesReadSize.WithLabelValues(column, method).Add(float64(maxOffset - minOffset))
 
 			pgs := cc.(*parquet.FileColumnChunk).PagesFrom(bufRdrAt)
-			defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
+			defer func() { _ = pgs.Close() }()
 
 			if err := pgs.SeekToRow(p.rows[0].from); err != nil {
 				return fmt.Errorf("could not seek to row: %w", err)
@@ -1084,10 +1090,26 @@ func (vi *chunkValuesIterator) At() parquet.Value {
 	return vi.buffer[vi.currentBufferIndex].Clone()
 }
 
+var bufferPool = pool.MustNewBucketedPool[byte](
+	int(16*units.KiB),
+	int(16*units.MiB),
+	2,
+	0,
+)
+
 type bufferedReaderAt struct {
 	r      io.ReaderAt
 	b      []byte
+	bufPtr *[]byte // Keep original pointer from pool for proper return
 	offset int64
+}
+
+func (b *bufferedReaderAt) Close() {
+	if b.bufPtr != nil {
+		bufferPool.Put(b.bufPtr)
+		b.bufPtr = nil
+		b.b = nil
+	}
 }
 
 func (b bufferedReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
@@ -1099,13 +1121,22 @@ func (b bufferedReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 	return b.r.ReadAt(p, off)
 }
 
-func newBufferedReaderAt(r io.ReaderAt, minOffset, maxOffset int64) io.ReaderAt {
-	if minOffset < maxOffset {
-		b := make([]byte, maxOffset-minOffset)
-		n, err := r.ReadAt(b, minOffset)
-		if err == nil {
-			return &bufferedReaderAt{r: r, b: b[:n], offset: minOffset}
-		}
+func newBufferedReaderAt(r io.ReaderAt, minOffset, maxOffset int64) (*bufferedReaderAt, error) {
+	if minOffset >= maxOffset {
+		return &bufferedReaderAt{r: r, b: nil, bufPtr: nil, offset: 0}, nil
 	}
-	return r
+	size := int(maxOffset - minOffset)
+
+	bufPtr, err := bufferPool.Get(size)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get buffer from pool: %w", err)
+	}
+
+	buf := (*bufPtr)[:size]
+	n, err := r.ReadAt(buf, minOffset)
+	if err != nil {
+		bufferPool.Put(bufPtr)
+		return nil, fmt.Errorf("unable to buffer reads: %w", err)
+	}
+	return &bufferedReaderAt{r: r, b: buf[:n], bufPtr: bufPtr, offset: minOffset}, nil
 }

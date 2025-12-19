@@ -7,11 +7,9 @@ package db
 import (
 	"context"
 	"fmt"
-	"io"
 	"slices"
 	"time"
 
-	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/annotations"
@@ -26,23 +24,19 @@ import (
 
 type Shard struct {
 	meta        schema.Meta
-	chunkspfile *parquet.File
-	labelspfile *parquet.File
-
-	chunkFileReaderFromCtx func(ctx context.Context) io.ReaderAt
+	chunkspfile *schema.FileWithReader
+	labelspfile *schema.FileWithReader
 }
 
 func NewShard(
 	meta schema.Meta,
-	chunkspfile *parquet.File,
-	labelspfile *parquet.File,
-	chunkFileReaderCtxFunc func(ctx context.Context) io.ReaderAt,
+	chunkspfile *schema.FileWithReader,
+	labelspfile *schema.FileWithReader,
 ) *Shard {
 	return &Shard{
-		meta:                   meta,
-		chunkspfile:            chunkspfile,
-		labelspfile:            labelspfile,
-		chunkFileReaderFromCtx: chunkFileReaderCtxFunc,
+		meta:        meta,
+		chunkspfile: chunkspfile,
+		labelspfile: labelspfile,
 	}
 }
 
@@ -221,7 +215,6 @@ func (q ShardQuerier) selectCore(ctx context.Context, spanName string, sorted bo
 			ChunkPagePartitionMaxRange:       q.selectChunkPartitionMaxRange,
 			ChunkPagePartitionMaxGap:         q.selectChunkPartitionMaxGap,
 			ChunkPagePartitionMaxConcurrency: q.selectChunkPartitionMaxConcurrency,
-			ChunkFileReaderFromContext:       q.shard.chunkFileReaderFromCtx,
 			HonorProjectionHints:             q.selectHonorProjectionHints,
 			ExternalLabels:                   q.extlabels,
 			ReplicaLabelNames:                q.replicaLabelNames,

@@ -7,14 +7,13 @@ package search
 import (
 	"context"
 	"fmt"
-	"io"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/alecthomas/units"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/efficientgo/core/errcapture"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
@@ -27,6 +26,8 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
+var coalesceableLabelsGap = uint64(4 * units.Mebibyte)
+
 type SeriesChunks struct {
 	LsetHash uint64
 	Lset     labels.Labels
@@ -36,12 +37,8 @@ type SeriesChunks struct {
 type SelectReadMeta struct {
 	// The actual data for this Select call and metadata for how to read it
 	Meta       schema.Meta
-	LabelPfile *parquet.File
-	ChunkPfile *parquet.File
-
-	// We smuggle a bucket reader here so we can create a prepared ReaderAt
-	// for chunks that is scoped to this query and can be traced.
-	ChunkFileReaderFromContext func(ctx context.Context) io.ReaderAt
+	LabelPfile *schema.FileWithReader
+	ChunkPfile *schema.FileWithReader
 
 	// Quotas for the query that issued this Select call
 	ChunkBytesQuota *limits.Quota
@@ -81,7 +78,7 @@ func Select(
 	}
 
 	// label and chunk files have same number of rows and rowgroups, just pick either
-	labelRowGroups := meta.LabelPfile.RowGroups()
+	labelRowGroups := meta.LabelPfile.File().RowGroups()
 	numRowGroups := len(labelRowGroups)
 
 	var (
@@ -98,11 +95,11 @@ func Select(
 			if err != nil {
 				return fmt.Errorf("unable to convert matchers to constraints: %w", err)
 			}
-			if err := initialize(meta.LabelPfile.Schema(), cs...); err != nil {
+			if err := initialize(meta.LabelPfile.File().Schema(), cs...); err != nil {
 				return fmt.Errorf("unable to initialize constraints: %w", err)
 			}
 
-			rrs, err := filter(ctx, labelRowGroups[i], cs...)
+			rrs, err := filter(ctx, meta.LabelPfile, i, cs...)
 			if err != nil {
 				return fmt.Errorf("unable to compute ranges: %w", err)
 			}
@@ -140,7 +137,7 @@ func Select(
 type LabelValuesReadMeta struct {
 	// The actual data for this LabelValues call and metadata for how to read it
 	Meta       schema.Meta
-	LabelPfile *parquet.File
+	LabelPfile *schema.FileWithReader
 
 	// Thanos labels processing hints
 	ExternalLabels    labels.Labels
@@ -167,26 +164,37 @@ func LabelValues(
 		annos annotations.Annotations
 	)
 
+	// TODO: move this to materializeLabelValues in materialize.go
 	if len(ms) == 0 {
 		// No matchers means we can read label values from the column dictionaries
 		vals := make([]string, 0)
-		for _, rg := range meta.LabelPfile.RowGroups() {
+		f := meta.LabelPfile
+		for i, rg := range f.File().RowGroups() {
 			lc, ok := rg.Schema().Lookup(schema.LabelNameToColumn(name))
 			if !ok {
 				continue
 			}
-			pg := rg.ColumnChunks()[lc.ColumnIndex].Pages()
-			defer errcapture.Do(&rerr, pg.Close, "column chunk pages close")
+			cc := rg.ColumnChunks()[lc.ColumnIndex].(*parquet.FileColumnChunk)
 
-			p, err := pg.ReadPage()
+			dictOffset, dictSize := f.DictionaryPageBounds(i, lc.ColumnIndex)
+			bufRdrAt, err := newBufferedReaderAt(f.Reader(ctx), int64(dictOffset), int64(dictOffset)+int64(dictSize))
 			if err != nil {
-				return nil, annos, fmt.Errorf("unable to read page: %w", err)
+				return nil, nil, fmt.Errorf("unable to create buffered reader: %w", err)
 			}
-			d := p.Dictionary()
+			defer bufRdrAt.Close()
+
+			pg := cc.PagesFrom(bufRdrAt)
+			defer pg.Close()
+
+			d, err := pg.ReadDictionary()
+			if err != nil {
+				return nil, annos, fmt.Errorf("unable to read column dictionary: %w", err)
+			}
 
 			for i := range d.Len() {
 				vals = append(vals, d.Index(int32(i)).Clone().String())
 			}
+			parquet.Release(d.Page())
 		}
 		if len(extVal) != 0 {
 			if len(vals) != 0 {
@@ -198,7 +206,7 @@ func LabelValues(
 		}
 	} else {
 		// matchers means we need to actually read values of the column
-		labelRowGroups := meta.LabelPfile.RowGroups()
+		labelRowGroups := meta.LabelPfile.File().RowGroups()
 		numRowGroups := len(labelRowGroups)
 
 		var mu sync.Mutex
@@ -210,11 +218,11 @@ func LabelValues(
 				if err != nil {
 					return fmt.Errorf("unable to convert matchers to constraints: %w", err)
 				}
-				if err := initialize(meta.LabelPfile.Schema(), cs...); err != nil {
+				if err := initialize(meta.LabelPfile.File().Schema(), cs...); err != nil {
 					return fmt.Errorf("unable to initialize constraints: %w", err)
 				}
 
-				rrs, err := filter(ctx, labelRowGroups[i], cs...)
+				rrs, err := filter(ctx, meta.LabelPfile, i, cs...)
 				if err != nil {
 					return fmt.Errorf("unable to compute ranges: %w", err)
 				}
@@ -261,7 +269,7 @@ func LabelValues(
 type LabelNamesReadMeta struct {
 	// The actual data for this LabelNames call and metadata for how to read it
 	Meta       schema.Meta
-	LabelPfile *parquet.File
+	LabelPfile *schema.FileWithReader
 
 	// Thanos labels processing hints
 	ExternalLabels    labels.Labels
@@ -287,7 +295,7 @@ func LabelNames(
 
 	if len(ms) == 0 {
 		// No matchers means we can read label names from the schema
-		for _, c := range meta.LabelPfile.Schema().Columns() {
+		for _, c := range meta.LabelPfile.File().Schema().Columns() {
 			if strings.HasPrefix(c[0], schema.LabelColumnPrefix) {
 				res = append(res, schema.ColumnToLabelName(c[0]))
 			}
@@ -295,7 +303,7 @@ func LabelNames(
 		res = append(res, externalLabelNames(meta.ExternalLabels, meta.ReplicaLabelNames)...)
 	} else {
 		// matchers means we need to fetch label names for matching rows from the table
-		labelRowGroups := meta.LabelPfile.RowGroups()
+		labelRowGroups := meta.LabelPfile.File().RowGroups()
 		numRowGroups := len(labelRowGroups)
 
 		var mu sync.Mutex
@@ -307,11 +315,11 @@ func LabelNames(
 				if err != nil {
 					return fmt.Errorf("unable to convert matchers to constraints: %w", err)
 				}
-				if err := initialize(meta.LabelPfile.Schema(), cs...); err != nil {
+				if err := initialize(meta.LabelPfile.File().Schema(), cs...); err != nil {
 					return fmt.Errorf("unable to initialize constraints: %w", err)
 				}
 
-				rrs, err := filter(ctx, labelRowGroups[i], cs...)
+				rrs, err := filter(ctx, meta.LabelPfile, i, cs...)
 				if err != nil {
 					return fmt.Errorf("unable to compute ranges: %w", err)
 				}

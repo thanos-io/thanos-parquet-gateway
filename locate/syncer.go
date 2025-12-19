@@ -235,6 +235,12 @@ func bucketReaderFromContext(bkt objstore.Bucket, name string) func(context.Cont
 	}
 }
 
+func mmapReaderFromContext(f *fileutil.MmapFile) func(context.Context) io.ReaderAt {
+	return func(_ context.Context) io.ReaderAt {
+		return f.File()
+	}
+}
+
 func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, cfg blockConfig) (s *db.Shard, err error) {
 	chunkspfile := schema.ChunksPfileNameForShard(m.Name, i)
 	attrs, err := bkt.Attributes(ctx, chunkspfile)
@@ -289,7 +295,15 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 			}
 			return nil, rerr
 		}
-		return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
+		chunkspfWithRdr, err := schema.NewFileWithReader(chunkspf, bktRdrAtFromCtx)
+		if err != nil {
+			return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
+		}
+		labelspfWithRdr, err := schema.NewFileWithReader(labelspf, mmapReaderFromContext(f))
+		if err != nil {
+			return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
+		}
+		return db.NewShard(m, chunkspfWithRdr, labelspfWithRdr), nil
 	}
 	rdr, err := bkt.Get(ctx, labelspfile)
 	if err != nil {
@@ -324,5 +338,13 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 		}
 		return nil, rerr
 	}
-	return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
+	chunkspfWithRdr, err := schema.NewFileWithReader(chunkspf, bktRdrAtFromCtx)
+	if err != nil {
+		return nil, fmt.Errorf("unable to create FileWithReader for chunks: %w", err)
+	}
+	labelspfWithRdr, err := schema.NewFileWithReader(labelspf, mmapReaderFromContext(mf))
+	if err != nil {
+		return nil, fmt.Errorf("unable to create FileWithReader for labels: %w", err)
+	}
+	return db.NewShard(m, chunkspfWithRdr, labelspfWithRdr), nil
 }

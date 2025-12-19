@@ -6,19 +6,23 @@ package search
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"slices"
 	"testing"
 
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"go.uber.org/goleak"
+
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-func buildFile[T any](t testing.TB, rows []T) *parquet.File {
+func buildFile[T any](t testing.TB, rows []T) *schema.FileWithReader {
 	buf := bytes.NewBuffer(nil)
 	w := parquet.NewGenericWriter[T](buf, parquet.PageBufferSize(12), parquet.WriteBufferSize(0))
 	for _, row := range rows {
@@ -34,13 +38,17 @@ func buildFile[T any](t testing.TB, rows []T) *parquet.File {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return file
+	f, err := schema.NewFileWithReader(file, func(_ context.Context) io.ReaderAt { return reader })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }
 
-func mustNewFastRegexMatcher(t *testing.T, s string) *labels.FastRegexMatcher {
-	res, err := labels.NewFastRegexMatcher(s)
+func mustMatchersToConstraint(t testing.TB, m ...*labels.Matcher) []Constraint {
+	res, err := matchersToConstraint(m...)
 	if err != nil {
-		t.Fatalf("unable to build fast regex matcher: %s", err)
+		t.Fatalf("unable to build matchers from constraints: %s", err)
 	}
 	return res
 }
@@ -57,9 +65,9 @@ func TestFilter(t *testing.T) {
 
 	t.Run("", func(t *testing.T) {
 		type s struct {
-			A string `parquet:",optional,dict"`
-			B string `parquet:",optional,dict"`
-			C string `parquet:",optional,dict"`
+			A string `parquet:"___cf_meta_label_A,optional,dict"`
+			B string `parquet:"___cf_meta_label_B,optional,dict"`
+			C string `parquet:"___cf_meta_label_C,optional,dict"`
 		}
 		for _, tc := range []testcase[s]{
 			{
@@ -76,8 +84,8 @@ func TestFilter(t *testing.T) {
 				expectations: []expectation{
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("7")),
-							Equal("C", parquet.ValueOf("g")),
+							Equal("___cf_meta_label_A", parquet.ValueOf("7")),
+							Equal("___cf_meta_label_C", parquet.ValueOf("g")),
 						},
 						expect: []rowRange{
 							{from: 6, count: 1},
@@ -85,7 +93,7 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("7")),
+							Equal("___cf_meta_label_A", parquet.ValueOf("7")),
 						},
 						expect: []rowRange{
 							{from: 2, count: 1},
@@ -94,7 +102,7 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("7")), Not(Equal("B", parquet.ValueOf("1"))),
+							Equal("___cf_meta_label_A", parquet.ValueOf("7")), Not(Equal("___cf_meta_label_B", parquet.ValueOf("1"))),
 						},
 						expect: []rowRange{
 							{from: 2, count: 1},
@@ -102,7 +110,7 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("7")), Not(Equal("C", parquet.ValueOf("c"))),
+							Equal("___cf_meta_label_A", parquet.ValueOf("7")), Not(Equal("___cf_meta_label_C", parquet.ValueOf("c"))),
 						},
 						expect: []rowRange{
 							{from: 5, count: 2},
@@ -110,16 +118,16 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Not(Equal("A", parquet.ValueOf("227"))),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("227"))),
 						},
 						expect: []rowRange{
 							{from: 0, count: 8},
 						},
 					},
 					{
-						constraints: []Constraint{
-							Regex("C", mustNewFastRegexMatcher(t, "a|c|d")),
-						},
+						constraints: mustMatchersToConstraint(t,
+							labels.MustNewMatcher(labels.MatchRegexp, "C", "a|c|d"),
+						),
 						expect: []rowRange{
 							{from: 0, count: 1},
 							{from: 2, count: 2},
@@ -145,8 +153,16 @@ func TestFilter(t *testing.T) {
 				},
 				expectations: []expectation{
 					{
+						constraints: mustMatchersToConstraint(t,
+							labels.MustNewMatcher(labels.MatchRegexp, "C", ""),
+						),
+						expect: []rowRange{
+							{from: 0, count: 12},
+						},
+					},
+					{
 						constraints: []Constraint{
-							Regex("C", mustNewFastRegexMatcher(t, "")),
+							Equal("___cf_meta_label_C", parquet.ValueOf("")),
 						},
 						expect: []rowRange{
 							{from: 0, count: 12},
@@ -154,15 +170,7 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Equal("C", parquet.ValueOf("")),
-						},
-						expect: []rowRange{
-							{from: 0, count: 12},
-						},
-					},
-					{
-						constraints: []Constraint{
-							Not(Equal("A", parquet.ValueOf("3"))),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("3"))),
 						},
 						expect: []rowRange{
 							{from: 0, count: 9},
@@ -171,8 +179,8 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Not(Equal("A", parquet.ValueOf("3"))),
-							Equal("B", parquet.ValueOf("5")),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("3"))),
+							Equal("___cf_meta_label_B", parquet.ValueOf("5")),
 						},
 						expect: []rowRange{
 							{from: 4, count: 5},
@@ -180,8 +188,8 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Not(Equal("A", parquet.ValueOf("3"))),
-							Not(Equal("A", parquet.ValueOf("1"))),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("3"))),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("1"))),
 						},
 						expect: []rowRange{
 							{from: 6, count: 3},
@@ -190,22 +198,22 @@ func TestFilter(t *testing.T) {
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("2")),
-							Not(Equal("B", parquet.ValueOf("5"))),
+							Equal("___cf_meta_label_A", parquet.ValueOf("2")),
+							Not(Equal("___cf_meta_label_B", parquet.ValueOf("5"))),
 						},
 						expect: []rowRange{},
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("2")),
-							Not(Equal("B", parquet.ValueOf("5"))),
+							Equal("___cf_meta_label_A", parquet.ValueOf("2")),
+							Not(Equal("___cf_meta_label_B", parquet.ValueOf("5"))),
 						},
 						expect: []rowRange{},
 					},
 					{
 						constraints: []Constraint{
-							Equal("A", parquet.ValueOf("3")),
-							Not(Equal("B", parquet.ValueOf("2"))),
+							Equal("___cf_meta_label_A", parquet.ValueOf("3")),
+							Not(Equal("___cf_meta_label_B", parquet.ValueOf("2"))),
 						},
 						expect: []rowRange{
 							{from: 9, count: 2},
@@ -227,8 +235,8 @@ func TestFilter(t *testing.T) {
 				expectations: []expectation{
 					{
 						constraints: []Constraint{
-							Not(Equal("A", parquet.ValueOf("1"))),
-							Not(Equal("B", parquet.ValueOf("2"))),
+							Not(Equal("___cf_meta_label_A", parquet.ValueOf("1"))),
+							Not(Equal("___cf_meta_label_B", parquet.ValueOf("2"))),
 						},
 						expect: []rowRange{
 							{from: 2, count: 1},
@@ -246,27 +254,27 @@ func TestFilter(t *testing.T) {
 				},
 				expectations: []expectation{
 					{
-						constraints: []Constraint{
-							Regex("C", mustNewFastRegexMatcher(t, "f.*")),
-						},
+						constraints: mustMatchersToConstraint(t,
+							labels.MustNewMatcher(labels.MatchRegexp, "C", "f.*"),
+						),
 						expect: []rowRange{
 							{from: 0, count: 1},
 							{from: 2, count: 1},
 						},
 					},
 					{
-						constraints: []Constraint{
-							Regex("C", mustNewFastRegexMatcher(t, "b.*")),
-						},
+						constraints: mustMatchersToConstraint(t,
+							labels.MustNewMatcher(labels.MatchRegexp, "C", "b.*"),
+						),
 						expect: []rowRange{
 							{from: 1, count: 1},
 							{from: 3, count: 1},
 						},
 					},
 					{
-						constraints: []Constraint{
-							Regex("C", mustNewFastRegexMatcher(t, "f.*|b.*")),
-						},
+						constraints: mustMatchersToConstraint(t,
+							labels.MustNewMatcher(labels.MatchRegexp, "C", "f.*|b.*"),
+						),
 						expect: []rowRange{
 							{from: 0, count: 4},
 						},
@@ -279,11 +287,11 @@ func TestFilter(t *testing.T) {
 			sfile := buildFile(t, tc.rows)
 			for _, expectation := range tc.expectations {
 				t.Run("", func(t *testing.T) {
-					if err := initialize(sfile.Schema(), expectation.constraints...); err != nil {
+					if err := initialize(sfile.File().Schema(), expectation.constraints...); err != nil {
 						t.Fatal(err)
 					}
-					for _, rg := range sfile.RowGroups() {
-						rr, err := filter(ctx, rg, expectation.constraints...)
+					for i := range sfile.File().RowGroups() {
+						rr, err := filter(ctx, sfile, i, expectation.constraints...)
 						if err != nil {
 							t.Fatal(err)
 						}

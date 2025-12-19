@@ -5,7 +5,7 @@
 package search
 
 import (
-	"sort"
+	"slices"
 )
 
 type rowRange struct {
@@ -32,7 +32,7 @@ func limitRowRanges(limit int64, rr []rowRange) []rowRange {
 			res = append(res, rowRange{from: rr[i].from, count: rr[i].count - (rr[i].count - limit + cur)})
 			break
 		}
-		res = append(res, rr[i])
+		res = append(res, rowRange{from: rr[i].from, count: rr[i].count})
 		cur += rr[i].count
 	}
 	return simplify(res)
@@ -42,7 +42,7 @@ func limitRowRanges(limit int64, rr []rowRange) []rowRange {
 // it assumes that lhs and rhs are simplified and returns a simplified result.
 // it operates in o(l+r) time by cursoring through ranges with a two pointer approach.
 func intersectRowRanges(lhs, rhs []rowRange) []rowRange {
-	res := make([]rowRange, 0)
+	res := make([]rowRange, 0, min(len(lhs), len(rhs)))
 	for l, r := 0, 0; l < len(lhs) && r < len(rhs); {
 		al, bl := lhs[l].from, lhs[l].from+lhs[l].count
 		ar, br := rhs[r].from, rhs[r].from+rhs[r].count
@@ -74,7 +74,10 @@ func intersectRowRanges(lhs, rhs []rowRange) []rowRange {
 // and returns a simplified result. It operates in O(l+r) time by using a two-pointer approach
 // to efficiently process both ranges.
 func complementRowRanges(lhs, rhs []rowRange) []rowRange {
-	res := make([]rowRange, 0)
+	res := make([]rowRange, 0, len(lhs)+len(rhs))
+
+	// rhs is modified in place, to make it concurrency safe we need to clone it
+	rhs = slices.Clone(rhs)
 
 	l, r := 0, 0
 	for l < len(lhs) && r < len(rhs) {
@@ -127,8 +130,11 @@ func simplify(rr []rowRange) []rowRange {
 		return nil
 	}
 
-	sort.Slice(rr, func(i, j int) bool {
-		return rr[i].from < rr[j].from
+	// rr is modified in place, to make it concurrency safe we need to clone it
+	rr = slices.Clone(rr)
+
+	slices.SortFunc(rr, func(rri, rrj rowRange) int {
+		return int(rri.from - rrj.from)
 	})
 
 	tmp := make([]rowRange, 0)
