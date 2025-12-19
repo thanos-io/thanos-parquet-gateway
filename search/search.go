@@ -142,6 +142,9 @@ type LabelValuesReadMeta struct {
 	Meta       schema.Meta
 	LabelPfile *parquet.File
 
+	// Quotas for the query that issued this label values call
+	RowCountQuota *limits.Quota
+
 	// Thanos labels processing hints
 	ExternalLabels    labels.Labels
 	ReplicaLabelNames []string
@@ -262,6 +265,9 @@ type LabelNamesReadMeta struct {
 	// The actual data for this LabelNames call and metadata for how to read it
 	Meta       schema.Meta
 	LabelPfile *parquet.File
+
+	// Quotas for the query that issued this label names call
+	RowCountQuota *limits.Quota
 
 	// Thanos labels processing hints
 	ExternalLabels    labels.Labels

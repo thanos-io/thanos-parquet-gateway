@@ -50,6 +50,8 @@ func (blk *Block) Queryable(
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
 	selectHonorProjectionHints bool,
+	labelValuesRowCountQuota *limits.Quota,
+	labelNamesRowCountQuota *limits.Quota,
 ) *BlockQueryable {
 	qs := make([]*ShardQueryable, 0, len(blk.shards))
 	for _, shard := range blk.shards {
@@ -62,6 +64,8 @@ func (blk *Block) Queryable(
 			selectChunkPartitionMaxGap,
 			selectChunkPartitionMaxConcurrency,
 			selectHonorProjectionHints,
+			labelValuesRowCountQuota,
+			labelNamesRowCountQuota,
 		))
 	}
 	return &BlockQueryable{extlabels: extlabels, shards: qs}

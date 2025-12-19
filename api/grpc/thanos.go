@@ -42,6 +42,9 @@ type queryGRPCConfig struct {
 	selectChunkPartitionMaxRange       units.Base2Bytes
 	selectChunkPartitionMaxGap         units.Base2Bytes
 	selectChunkPartitionMaxConcurrency int
+	labelValuesRowCountQuota           int64
+	labelNamesRowCountQuota            int64
+	shardCountQuota                    int64
 }
 
 type QueryGRPCOption func(*queryGRPCConfig)
@@ -82,6 +85,24 @@ func SelectChunkPartitionMaxConcurrency(n int) QueryGRPCOption {
 	}
 }
 
+func LabelValuesRowCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.labelValuesRowCountQuota = n
+	}
+}
+
+func LabelNamesRowCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.labelNamesRowCountQuota = n
+	}
+}
+
+func ShardCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.shardCountQuota = n
+	}
+}
+
 type QueryServer struct {
 	querypb.UnimplementedQueryServer
 	infopb.UnimplementedInfoServer
@@ -96,6 +117,9 @@ type QueryServer struct {
 	selectChunkPartitionMaxRange       units.Base2Bytes
 	selectChunkPartitionMaxGap         units.Base2Bytes
 	selectChunkPartitionMaxConcurrency int
+	labelValuesRowCountQuota           int64
+	labelNamesRowCountQuota            int64
+	shardCountQuota                    int64
 }
 
 func (qs *QueryServer) queryable(replicaLabels ...string) *db.DBQueryable {
@@ -106,6 +130,9 @@ func (qs *QueryServer) queryable(replicaLabels ...string) *db.DBQueryable {
 		db.SelectChunkPartitionMaxRange(qs.selectChunkPartitionMaxRange),
 		db.SelectChunkPartitionMaxGap(qs.selectChunkPartitionMaxGap),
 		db.SelectChunkPartitionMaxConcurrency(qs.selectChunkPartitionMaxConcurrency),
+		db.LabelValuesRowCountQuota(qs.labelValuesRowCountQuota),
+		db.LabelNamesRowCountQuota(qs.labelNamesRowCountQuota),
+		db.ShardCountQuota(qs.shardCountQuota),
 	)
 }
 
@@ -123,6 +150,9 @@ func NewQueryServer(db *db.DB, engine promql.QueryEngine, opts ...QueryGRPCOptio
 		selectChunkPartitionMaxRange:       cfg.selectChunkPartitionMaxRange,
 		selectChunkPartitionMaxGap:         cfg.selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: cfg.selectChunkPartitionMaxConcurrency,
+		labelValuesRowCountQuota:           cfg.labelValuesRowCountQuota,
+		labelNamesRowCountQuota:            cfg.labelNamesRowCountQuota,
+		shardCountQuota:                    cfg.shardCountQuota,
 	}
 }
 
@@ -305,6 +335,9 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 
 	cq, err := qryable.ChunkQuerier(request.MinTime, request.MaxTime)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, cq.Close, "chunk querier close")
@@ -385,6 +418,9 @@ func chunkEncToStoreEnc(enc chunkenc.Encoding) storepb.Chunk_Encoding {
 func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (_ *storepb.LabelNamesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, q.Close, "querier close")
@@ -407,6 +443,9 @@ func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNam
 func (qs *QueryServer) LabelValues(ctx context.Context, request *storepb.LabelValuesRequest) (_ *storepb.LabelValuesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, q.Close, "querier close")
