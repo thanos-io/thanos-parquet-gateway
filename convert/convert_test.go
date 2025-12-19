@@ -168,6 +168,72 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 	}
 }
 
+// TestConverterSortKeySpansMultipleShards tests that when a single sortKey
+// has many series spanning multiple shards, label names are correctly collected.
+func TestConverterSortKeySpansMultipleShards(t *testing.T) {
+	st := teststorage.New(t)
+	t.Cleanup(func() { _ = st.Close() })
+
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	// Create 500 series all with same __name__ (same sortKey) but different "instance" labels
+	// With RowGroupSize(100) and RowGroupCount(1), this forces 5 shards from same sortKey
+	app := st.Appender(t.Context())
+	for i := range 500 {
+		lbls := labels.FromStrings(
+			"__name__", "same_metric",
+			"instance", fmt.Sprintf("instance_%d", i),
+		)
+		if _, err := app.Append(0, lbls, time.Second.Milliseconds(), float64(i)); err != nil {
+			t.Fatalf("unable to append sample: %s", err)
+		}
+	}
+	if err := app.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+
+	h := st.Head()
+	ts := time.UnixMilli(h.MinTime()).UTC()
+	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+	opts := []ConvertOption{
+		SortBy(labels.MetricName),
+		RowGroupSize(100),
+		RowGroupCount(1),
+	}
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+		t.Fatalf("unable to convert tsdb block: %s", err)
+	}
+
+	discoverer := locate.NewDiscoverer(bkt)
+	if err := discoverer.Discover(t.Context()); err != nil {
+		t.Fatalf("unable to discover: %s", err)
+	}
+	meta := discoverer.Metas()[slices.Collect(maps.Keys(discoverer.Metas()))[0]]
+
+	if meta.Shards < 2 {
+		t.Fatalf("expected multiple shards, got %d", meta.Shards)
+	}
+
+	// Verify each shard has both __name__ and instance columns
+	for i := range int(meta.Shards) {
+		lf, err := loadParquetFile(t.Context(), bkt, schema.LabelsPfileNameForShard(meta.Name, i))
+		if err != nil {
+			t.Fatalf("unable to load parquet file for shard %d: %s", i, err)
+		}
+		if _, ok := lf.Schema().Lookup(schema.LabelNameToColumn(labels.MetricName)); !ok {
+			t.Fatalf("shard %d missing __name__ column", i)
+		}
+		if _, ok := lf.Schema().Lookup(schema.LabelNameToColumn("instance")); !ok {
+			t.Fatalf("shard %d missing instance column", i)
+		}
+	}
+}
+
 func loadParquetFile(ctx context.Context, bkt objstore.BucketReader, name string) (*parquet.File, error) {
 	rdr, err := bkt.Get(ctx, name)
 	if err != nil {
