@@ -358,6 +358,9 @@ func shardedIndexRowReader(
 				})
 			}
 			postings := index.NewListPostings(refs)
+			// MergeChunkSeriesSet assumes each input set is sorted by labels. NewListPostings preserves ref order,
+			// so we reorder postings into label-sorted order to ensure correct merging/deduplication.
+			postings = indexr.SortedPostings(postings)
 			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
 			seriesSets = append(seriesSets, seriesSet)
 		}

@@ -13,12 +13,14 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alecthomas/units"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
@@ -165,6 +167,110 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 	}
 	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
+	}
+}
+
+func TestConverterDeduplicatesAcrossBlocks(t *testing.T) {
+	stA := teststorage.New(t)
+	t.Cleanup(func() { _ = stA.Close() })
+	stB := teststorage.New(t)
+	t.Cleanup(func() { _ = stB.Close() })
+
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	appendSeries := func(app storage.Appender, vals []string) {
+		for i, v := range vals {
+			lbls := labels.FromStrings(
+				"__name__", "foo",
+				"instance", v,
+			)
+			if _, err := app.Append(0, lbls, time.Second.Milliseconds(), float64(i)); err != nil {
+				t.Fatalf("unable to append sample: %s", err)
+			}
+		}
+	}
+	type hv struct {
+		h uint64
+		v string
+	}
+	all := make([]hv, 0, 400)
+	for i := range 400 {
+		v := fmt.Sprintf("v_%03d_%x", i, uint64(i*i+17))
+		all = append(all, hv{
+			h: labels.FromStrings("__name__", "foo", "instance", v).Hash(),
+			v: v,
+		})
+	}
+	slices.SortFunc(all, func(a, b hv) int {
+		if a.h < b.h {
+			return -1
+		}
+		if a.h > b.h {
+			return 1
+		}
+		return strings.Compare(a.v, b.v)
+	})
+	shared := make([]string, 0, 200)
+	extra := make([]string, 0, 200)
+	for i := range all {
+		if i%2 == 0 {
+			shared = append(shared, all[i].v)
+			continue
+		}
+		extra = append(extra, all[i].v)
+	}
+	appA := stA.Appender(t.Context())
+	appendSeries(appA, shared)
+	if err := appA.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+	appB := stB.Appender(t.Context())
+	appendSeries(appB, shared)
+	appendSeries(appB, extra)
+	if err := appB.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+
+	hA := stA.Head()
+	hB := stB.Head()
+	ts := time.UnixMilli(hA.MinTime()).UTC()
+	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+	opts := []ConvertOption{
+		SortBy(labels.MetricName),
+		RowGroupSize(250),
+		RowGroupCount(2),
+		LabelPageBufferSize(units.KiB),
+	}
+	blks := []Convertible{&HeadBlock{Head: hA}, &HeadBlock{Head: hB}}
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, blks, opts...); err != nil {
+		t.Fatalf("unable to convert tsdb blocks: %s", err)
+	}
+
+	discoverer := locate.NewDiscoverer(bkt)
+	if err := discoverer.Discover(t.Context()); err != nil {
+		t.Fatalf("unable to discover parquet block: %s", err)
+	}
+	metas := discoverer.Metas()
+	if n := len(metas); n != 1 {
+		t.Fatalf("unexpected number of metas: %d", n)
+	}
+	meta := metas[slices.Collect(maps.Keys(metas))[0]]
+
+	totalRows := int64(0)
+	for i := range int(meta.Shards) {
+		lf, err := loadParquetFile(t.Context(), bkt, schema.LabelsPfileNameForShard(meta.Name, i))
+		if err != nil {
+			t.Fatalf("unable to load label parquet file for shard %d: %s", i, err)
+		}
+		totalRows += lf.NumRows()
+	}
+	if totalRows != 400 {
+		t.Fatalf("expected deduplicated rows=%d, got %d", 400, totalRows)
 	}
 }
 
