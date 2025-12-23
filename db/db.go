@@ -123,12 +123,13 @@ func SelectChunkPartitionMaxConcurrency(n int) QueryableOption {
 	}
 }
 
-// Queryable returns a storage.Queryable that drops replica labels at runtime. Replica labels are
-// labels that identify a replica, i.e. one member of an HA pair of Prometheus servers. Thanos
-// might request at query time to drop those labels so that we can deduplicate results into one view.
+// Queryable returns a DBQueryable (which implements both storage.Queryable and storage.ChunkQueryable)
+// that drops replica labels at runtime. Replica labels are labels that identify a replica,
+// i.e. one member of an HA pair of Prometheus servers. Thanos might request at query time
+// to drop those labels so that we can deduplicate results into one view.
 // Common replica labels are 'prometheus', 'host', etc.
 // It also enforces various quotas over its lifetime.
-func (db *DB) Queryable(opts ...QueryableOption) storage.Queryable {
+func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 	cfg := queryableConfig{
 		selectChunkBytesQuota:              limits.UnlimitedQuota(),
 		selectRowCountQuota:                limits.UnlimitedQuota(),
@@ -197,7 +198,7 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 		return blk.Meta().Version < schema.V2
 	})
 
-	qs := make([]storage.Querier, 0, len(db.blocks))
+	qs := make([]*BlockQuerier, 0, len(db.blocks))
 	for _, blk := range bs {
 		bmint, bmaxt := blk.Timerange()
 
@@ -215,7 +216,7 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unable to get block querier: %w", err)
 		}
-		qs = append(qs, q)
+		qs = append(qs, q.(*BlockQuerier))
 	}
 	return &DBQuerier{mint: mint, maxt: maxt, blocks: qs}, nil
 }
@@ -223,7 +224,7 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 type DBQuerier struct {
 	mint, maxt int64
 
-	blocks []storage.Querier
+	blocks []*BlockQuerier
 }
 
 var _ storage.Querier = &DBQuerier{}
@@ -326,12 +327,56 @@ func (q DBQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.Sel
 	sorted = sorted || len(q.blocks) > 1
 
 	sss := make([]storage.SeriesSet, 0, len(q.blocks))
-	for _, q := range q.blocks {
-		sss = append(sss, q.Select(ctx, sorted, hints, matchers...))
+	for _, blk := range q.blocks {
+		sss = append(sss, blk.Select(ctx, sorted, hints, matchers...))
 	}
 
 	if len(sss) == 0 {
 		return storage.EmptySeriesSet()
 	}
 	return storage.NewMergeSeriesSet(sss, hints.Limit, storage.ChainedSeriesMerge)
+}
+
+func (db *DBQueryable) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
+	q, err := db.Querier(mint, maxt)
+	if err != nil {
+		return nil, err
+	}
+	return &DBChunkQuerier{DBQuerier: q.(*DBQuerier)}, nil
+}
+
+type DBChunkQuerier struct {
+	*DBQuerier
+}
+
+var _ storage.ChunkQuerier = &DBChunkQuerier{}
+
+func (q *DBChunkQuerier) Select(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	return newLazyChunkSeriesSet(ctx, q.selectChunksFn, sorted, hints, matchers...)
+}
+
+func (q *DBChunkQuerier) selectChunksFn(ctx context.Context, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.ChunkSeriesSet {
+	ctx, span := tracing.Tracer().Start(ctx, "ChunkSelect DB")
+	defer span.End()
+
+	span.SetAttributes(attribute.Bool("sorted", sorted))
+	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.Int("block.shards", len(q.blocks)))
+
+	// If we need to merge multiple series sets vertically we need them sorted
+	sorted = sorted || len(q.blocks) > 1
+
+	sss := make([]storage.ChunkSeriesSet, 0, len(q.blocks))
+	for _, blk := range q.blocks {
+		bcq := &BlockChunkQuerier{*blk}
+		sss = append(sss, bcq.Select(ctx, sorted, hints, matchers...))
+	}
+
+	if len(sss) == 0 {
+		return storage.EmptyChunkSeriesSet()
+	}
+	if len(sss) == 1 {
+		return sss[0]
+	}
+	return storage.NewMergeChunkSeriesSet(sss, hints.Limit, storage.NewConcatenatingChunkSeriesMerger())
 }

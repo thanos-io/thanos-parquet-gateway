@@ -10,12 +10,13 @@ import (
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 )
 
 // Taken from https://github.com/thanos-io/thanos/blob/main/pkg/query/iter.go
 type chunkSeries struct {
 	lset       labels.Labels
-	chunks     []chunkenc.Chunk
+	chunks     []chunks.Meta
 	mint, maxt int64
 }
 
@@ -26,7 +27,7 @@ func (s *chunkSeries) Labels() labels.Labels {
 func (s *chunkSeries) Iterator(_ chunkenc.Iterator) chunkenc.Iterator {
 	its := make([]chunkenc.Iterator, 0, len(s.chunks))
 	for _, chk := range s.chunks {
-		its = append(its, chk.Iterator(nil))
+		its = append(its, chk.Chunk.Iterator(nil))
 	}
 	// We might have collect series where we trimmed all chunks because they had
 	// no timeseries in the interval
@@ -183,4 +184,48 @@ func (it *boundedSeriesIterator) Next() chunkenc.ValueType {
 
 func (it *boundedSeriesIterator) Err() error {
 	return it.it.Err()
+}
+
+type storageChunkSeries struct {
+	lset   labels.Labels
+	chunks []chunks.Meta
+}
+
+func (s *storageChunkSeries) Labels() labels.Labels {
+	return s.lset
+}
+
+func (s *storageChunkSeries) Iterator(it chunks.Iterator) chunks.Iterator {
+	if cmi, ok := it.(*chunkMetaIterator); ok {
+		cmi.Reset(s.chunks)
+		return cmi
+	}
+	return newChunkMetaIterator(s.chunks)
+}
+
+type chunkMetaIterator struct {
+	chunks []chunks.Meta
+	i      int
+}
+
+func newChunkMetaIterator(cs []chunks.Meta) *chunkMetaIterator {
+	return &chunkMetaIterator{chunks: cs, i: -1}
+}
+
+func (it *chunkMetaIterator) Reset(cs []chunks.Meta) {
+	it.chunks = cs
+	it.i = -1
+}
+
+func (it *chunkMetaIterator) At() chunks.Meta {
+	return it.chunks[it.i]
+}
+
+func (it *chunkMetaIterator) Next() bool {
+	it.i++
+	return it.i < len(it.chunks)
+}
+
+func (it *chunkMetaIterator) Err() error {
+	return nil
 }

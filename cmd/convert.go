@@ -54,6 +54,7 @@ type conversionOpts struct {
 	downloadConcurrency      int
 	blockDownloadConcurrency int
 	encodingConcurrency      int
+	writeConcurrency         int
 
 	tempDir string
 }
@@ -82,28 +83,17 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.download.concurrency", "concurrency for downloading files in parallel per tsdb block").Default("4").IntVar(&opts.downloadConcurrency)
 	cmd.Flag("convert.download.block-concurrency", "concurrency for downloading & opening multiple blocks in parallel").Default("1").IntVar(&opts.blockDownloadConcurrency)
 	cmd.Flag("convert.encoding.concurrency", "concurrency for encoding chunks").Default("4").IntVar(&opts.encodingConcurrency)
+	cmd.Flag("convert.write.concurrency", "concurrency for writer").Default("4").IntVar(&opts.writeConcurrency)
 }
 
 func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("parquet.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3")
-	cmd.Flag("parquet.storage.prefix", "prefix for the storage").Default("").StringVar(&opts.prefix)
-	cmd.Flag("parquet.storage.filesystem.directory", "directory for filesystem").Default(".data").StringVar(&opts.filesystemDirectory)
-	cmd.Flag("parquet.storage.s3.bucket", "bucket for s3").Default("").StringVar(&opts.s3Bucket)
-	cmd.Flag("parquet.storage.s3.endpoint", "endpoint for s3").Default("").StringVar(&opts.s3Endpoint)
-	cmd.Flag("parquet.storage.s3.access_key", "access key for s3").Default("").Envar("PARQUET_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
-	cmd.Flag("parquet.storage.s3.secret_key", "secret key for s3").Default("").Envar("PARQUET_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
-	cmd.Flag("parquet.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("parquet.objstore-config-file", "YAML file that contains object store configuration for parquet storage. See format details: https://thanos.io/tip/thanos/storage.md/#configuration").StringVar(&opts.objStoreConfigFile)
+	cmd.Flag("parquet.objstore-config", "Alternative to 'parquet.objstore-config-file'. YAML content for parquet storage configuration.").StringVar(&opts.objStoreConfig)
 }
 
 func (opts *bucketOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tsdb.storage.type", "type of storage").Default("filesystem").EnumVar(&opts.storage, "filesystem", "s3")
-	cmd.Flag("tsdb.storage.prefix", "prefix for the storage").Default("").StringVar(&opts.prefix)
-	cmd.Flag("tsdb.storage.filesystem.directory", "directory for filesystem").Default(".data").StringVar(&opts.filesystemDirectory)
-	cmd.Flag("tsdb.storage.s3.bucket", "bucket for s3").Default("").StringVar(&opts.s3Bucket)
-	cmd.Flag("tsdb.storage.s3.endpoint", "endpoint for s3").Default("").StringVar(&opts.s3Endpoint)
-	cmd.Flag("tsdb.storage.s3.access_key", "access key for s3").Default("").Envar("TSDB_STORAGE_S3_ACCESS_KEY").StringVar(&opts.s3AccessKey)
-	cmd.Flag("tsdb.storage.s3.secret_key", "secret key for s3").Default("").Envar("TSDB_STORAGE_S3_SECRET_KEY").StringVar(&opts.s3SecretKey)
-	cmd.Flag("tsdb.storage.s3.insecure", "use http").Default("false").BoolVar(&opts.s3Insecure)
+	cmd.Flag("tsdb.objstore-config-file", "YAML file that contains object store configuration for TSDB storage. See format details: https://thanos.io/tip/thanos/storage.md/#configuration").StringVar(&opts.objStoreConfigFile)
+	cmd.Flag("tsdb.objstore-config", "Alternative to 'tsdb.objstore-config-file'. YAML content for TSDB storage configuration.").StringVar(&opts.objStoreConfig)
 }
 
 func (opts *discoveryOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
@@ -271,6 +261,7 @@ func advanceConversion(
 			convert.RowGroupSize(opts.rowGroupSize),
 			convert.RowGroupCount(opts.rowGroupCount),
 			convert.EncodingConcurrency(opts.encodingConcurrency),
+			convert.WriteConcurrency(opts.writeConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
 		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
