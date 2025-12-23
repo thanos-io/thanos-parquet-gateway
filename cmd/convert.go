@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/oklog/run"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/thanos-io/objstore"
@@ -382,12 +384,37 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 			}); err != nil {
 				return fmt.Errorf("unable to download block %q: %w", src, err)
 			}
+
+			// Read Thanos metadata to extract external labels
+			externalLabels := labels.EmptyLabels()
+			metaPath := filepath.Join(dst, metadata.MetaFilename)
+			if metaFile, err := os.Open(metaPath); err == nil {
+				defer metaFile.Close()
+				var thanosMetadata metadata.Meta
+				if err := json.NewDecoder(metaFile).Decode(&thanosMetadata); err != nil {
+					log.Warn("Unable to read Thanos metadata, proceeding without external labels",
+						"block", src, "error", err)
+				} else {
+					externalLabels = labels.FromMap(thanosMetadata.Thanos.Labels)
+					log.Info("Loaded external labels from Thanos metadata",
+						"block", src,
+						"labels", externalLabels.String())
+				}
+			} else {
+				log.Debug("No Thanos metadata found, proceeding without external labels",
+					"block", src)
+			}
+
 			blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
 			if err != nil {
 				return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
 			}
+
+			// Wrap the block with external labels
+			wrappedBlock := convert.NewBlockWithExternalLabels(blk, externalLabels)
+
 			mu.Lock()
-			res = append(res, blk)
+			res = append(res, wrappedBlock)
 			mu.Unlock()
 
 			log.Debug("block download complete", "ulid", src)
