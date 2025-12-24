@@ -48,45 +48,48 @@ type Planner struct {
 	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
 	// for the next plan.
 	maxDays int
-	// Optional relative time window (offsets from now). If both zero, no window filtering.
-	minTimeOffset time.Duration
-	maxTimeOffset time.Duration
 }
 
-type PlannerOption func(*Planner)
-
-// WithTimeWindow sets optional relative time window offsets.
-func WithTimeWindow(minOffset, maxOffset time.Duration) PlannerOption {
-	return func(p *Planner) {
-		p.minTimeOffset = minOffset
-		p.maxTimeOffset = maxOffset
-	}
+func NewPlanner(notAfter time.Time, maxDays int) Planner {
+	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func NewPlanner(notAfter time.Time, maxDays int, opts ...PlannerOption) Planner {
-	p := Planner{notAfter: notAfter, maxDays: maxDays}
-	for _, opt := range opts {
-		opt(&p)
-	}
-	return p
-}
-
-func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
-	// Pre-compute window day bounds if configured.
+// Plan creates a conversion plan for the given time range.
+// minOffset and maxOffset are relative time offsets (e.g., -168h for 7 days ago).
+// These will be calculated from now() and rounded to day boundaries:
+//   - minOffset rounds DOWN to start of day (00:00:00 UTC)
+//   - maxOffset rounds UP to start of next day (00:00:00 UTC, exclusive)
+//
+// If both are 0, no time filtering is applied.
+func (p Planner) Plan(
+	tsdbMetas map[string]metadata.Meta,
+	parquetMetas map[string]schema.Meta,
+	minOffset time.Duration, // Relative time offset (0 = no lower bound)
+	maxOffset time.Duration, // Relative time offset (0 = no upper bound)
+) Plan {
+	// Pre-compute window day bounds if time range is specified.
 	var (
 		windowActive bool
 		winStartDay  time.Time
 		winEndDay    time.Time // exclusive
 	)
 
-	if p.minTimeOffset != 0 || p.maxTimeOffset != 0 {
+	if minOffset != 0 || maxOffset != 0 {
+		windowActive = true
 		now := time.Now()
-		winStart := now.Add(p.minTimeOffset)
-		winEnd := now.Add(p.maxTimeOffset)
-		if winStart.Before(winEnd) { // valid window
-			windowActive = true
-			winStartDay = util.NewDate(winStart.Year(), winStart.Month(), winStart.Day()).ToTime()
-			winEndDay = util.NewDate(winEnd.Year(), winEnd.Month(), winEnd.Day()).ToTime() // exclusive
+
+		// Round minOffset DOWN to start of day (00:00:00 UTC)
+		if minOffset != 0 {
+			t := now.Add(minOffset).UTC()
+			winStartDay = util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+		}
+
+		// Round maxOffset UP to start of next day (00:00:00 UTC, exclusive)
+		if maxOffset != 0 {
+			t := now.Add(maxOffset).UTC()
+			// Get the date, convert to time.Time, add 1 day
+			dateTime := util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+			winEndDay = dateTime.AddDate(0, 0, 1)
 		}
 	}
 
@@ -97,8 +100,11 @@ func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[strin
 			// Apply window filtering early: skip dates outside window when active.
 			if windowActive {
 				pt := partialDate.ToTime()
-				if pt.Before(winStartDay) || !pt.Before(winEndDay) {
-					continue
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue // Before window
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
+					continue // After or at window end
 				}
 			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
@@ -112,7 +118,10 @@ func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[strin
 			// Apply same window filtering for existing parquet coverage when active.
 			if windowActive {
 				pt := partialDate.ToTime()
-				if pt.Before(winStartDay) || !pt.Before(winEndDay) {
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
 					continue
 				}
 			}
