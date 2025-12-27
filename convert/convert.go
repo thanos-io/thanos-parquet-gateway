@@ -646,7 +646,7 @@ type fileWriter struct {
 	pw   *parquet.GenericWriter[any]
 	conv parquet.Conversion
 	w    io.WriteCloser
-	r    io.ReadCloser
+	bw   *bufio.Writer
 }
 
 type splitPipeFileWriter struct {
@@ -674,11 +674,11 @@ func newSplitFileWriter(ctx context.Context, bkt objstore.Bucket, inSchema *parq
 		fileWriters[file] = &fileWriter{
 			pw:   parquet.NewGenericWriter[any](bw, append(cfg.opts, cfg.s)...),
 			w:    w,
+			bw:   bw,
 			conv: conv,
 		}
 		g.Go(func() (rerr error) {
-			defer errcapture.Do(&rerr, r.Close, "buffered writer flush")
-
+			defer errcapture.Do(&rerr, r.Close, "pipe reader close")
 			return bkt.Upload(ctx, file, br)
 		})
 	}
@@ -719,6 +719,9 @@ func (s *splitPipeFileWriter) Close() error {
 	for _, fw := range s.fileWriters {
 		if err := fw.pw.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("unable to close pipewriter: %w", err))
+		}
+		if err := fw.bw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("unable to flush buffered writer: %w", err))
 		}
 		if err := fw.w.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("unable to close writer: %w", err))
