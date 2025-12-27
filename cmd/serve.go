@@ -11,6 +11,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -21,6 +23,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 
+	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/promql-engine/engine"
 	"github.com/thanos-io/promql-engine/logicalplan"
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
@@ -36,6 +39,7 @@ import (
 
 	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
 	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
+	"github.com/thanos-io/thanos-parquet-gateway/cardinality"
 	cfdb "github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -51,6 +55,22 @@ type serveOpts struct {
 	promAPI     apiOpts
 	thanosAPI   apiOpts
 	internalAPI apiOpts
+
+	cardinality cardinalityOpts
+
+	corsAllowedOrigins []string
+}
+
+type cardinalityOpts struct {
+	enabled     bool
+	cacheDir    string
+	concurrency int
+	timeout     time.Duration
+
+	preloadEnabled     bool
+	preloadDays        int
+	preloadConcurrency int
+	preloadInterval    time.Duration
 }
 
 func (opts *serveOpts) registerFlags(cmd *kingpin.CmdClause) {
@@ -62,6 +82,22 @@ func (opts *serveOpts) registerFlags(cmd *kingpin.CmdClause) {
 	opts.promAPI.registerServePrometheusAPIFlags(cmd)
 	opts.thanosAPI.registerServeThanosAPIFlags(cmd)
 	opts.internalAPI.registerServeInternalAPIFlags(cmd)
+	opts.cardinality.registerServeFlags(cmd)
+
+	cmd.Flag("http.cors.allowed-origins", "comma-separated list of allowed CORS origins (use * for all)").StringsVar(&opts.corsAllowedOrigins)
+}
+
+func (opts *cardinalityOpts) registerServeFlags(cmd *kingpin.CmdClause) {
+	defaultConcurrency := strconv.Itoa(runtime.NumCPU() * 2)
+
+	cmd.Flag("cardinality.enabled", "enable cardinality explorer API").Default("true").BoolVar(&opts.enabled)
+	cmd.Flag("cardinality.cache-dir", "directory to cache parquet files for cardinality analysis").Default(".data/cache/cardinality").StringVar(&opts.cacheDir)
+	cmd.Flag("cardinality.concurrency", "number of concurrent workers for cardinality queries").Default(defaultConcurrency).IntVar(&opts.concurrency)
+	cmd.Flag("cardinality.timeout", "timeout for cardinality queries (labels queries may need longer timeouts)").Default("5m").DurationVar(&opts.timeout)
+	cmd.Flag("cardinality.preload.enabled", "enable background preloading of cardinality indexes on startup").Default("true").BoolVar(&opts.preloadEnabled)
+	cmd.Flag("cardinality.preload.days", "number of days to preload (from today backwards)").Default("60").IntVar(&opts.preloadDays)
+	cmd.Flag("cardinality.preload.concurrency", "number of concurrent workers for preloading").Default(defaultConcurrency).IntVar(&opts.preloadConcurrency)
+	cmd.Flag("cardinality.preload.interval", "how often to check for new blocks to preload").Default("1h").DurationVar(&opts.preloadInterval)
 }
 
 func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
@@ -162,7 +198,9 @@ func registerServeApp(app *kingpin.Application) (*kingpin.CmdClause, func(contex
 			cfdb.ExternalLabels(labels.FromMap(opts.query.externalLabels)),
 		)
 
-		setupPromAPI(&g, log, db, opts.promAPI, opts.query)
+		if err := setupPromAPI(&g, log, bkt, db, opts.promAPI, opts.query, opts.cardinality, opts.corsAllowedOrigins); err != nil {
+			return fmt.Errorf("setup prometheus API: %w", err)
+		}
 		setupThanosAPI(&g, log, db, opts.thanosAPI, opts.query)
 		setupInternalAPI(&g, log, reg, opts.internalAPI)
 
@@ -207,7 +245,6 @@ func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 			EnableDelayedNameRemoval: false,
 		},
 	})
-
 }
 
 func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOpts queryOpts) {
@@ -265,8 +302,8 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 	})
 }
 
-func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOpts queryOpts) {
-	handler := cfhttp.NewAPI(db, engineFromQueryOpts(qOpts),
+func setupPromAPI(g *run.Group, log *slog.Logger, bkt objstore.Bucket, db *cfdb.DB, opts apiOpts, qOpts queryOpts, cOpts cardinalityOpts, corsOrigins []string) error {
+	apiOpts := []cfhttp.APIOption{
 		cfhttp.QueryOptions(
 			cfhttp.DefaultStep(qOpts.defaultStep),
 			cfhttp.DefaultLookback(qOpts.defaultLookback),
@@ -277,7 +314,50 @@ func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOp
 			cfhttp.SelectChunkPartitionMaxRange(qOpts.selectChunkPartitionMaxRange),
 			cfhttp.SelectChunkPartitionMaxGap(qOpts.selectChunkPartitionMaxGap),
 			cfhttp.SelectChunkPartitionMaxConcurrency(qOpts.selectChunkPartitionMaxConcurrency),
-		))
+		),
+	}
+
+	var cardSvc cardinality.Service
+	if cOpts.enabled {
+		svcOpts := []cardinality.ServiceOption{
+			cardinality.WithConcurrency(cOpts.concurrency),
+		}
+
+		if cOpts.preloadEnabled {
+			svcOpts = append(svcOpts, cardinality.WithPreloader(cardinality.PreloaderConfig{
+				Days:        cOpts.preloadDays,
+				Concurrency: cOpts.preloadConcurrency,
+				Interval:    cOpts.preloadInterval,
+			}))
+		}
+
+		var err error
+		cardSvc, err = cardinality.NewService(bkt, cOpts.cacheDir, svcOpts...)
+		if err != nil {
+			return fmt.Errorf("create cardinality service: %w", err)
+		}
+		apiOpts = append(apiOpts, cfhttp.CardinalityService(cardSvc))
+		log.Info("Cardinality explorer enabled",
+			slog.String("cache_dir", cOpts.cacheDir),
+			slog.Int("concurrency", cOpts.concurrency),
+			slog.Duration("timeout", cOpts.timeout),
+			slog.Bool("preloader", cOpts.preloadEnabled),
+		)
+		if cOpts.preloadEnabled {
+			log.Info("Cardinality preloader started",
+				slog.Int("days", cOpts.preloadDays),
+				slog.Int("concurrency", cOpts.preloadConcurrency),
+				slog.Duration("interval", cOpts.preloadInterval),
+			)
+		}
+	}
+
+	if len(corsOrigins) > 0 {
+		apiOpts = append(apiOpts, cfhttp.CORSAllowedOrigins(corsOrigins))
+		log.Info("CORS enabled", slog.Any("allowed_origins", corsOrigins))
+	}
+
+	handler := cfhttp.NewAPI(db, engineFromQueryOpts(qOpts), apiOpts...)
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", opts.port), Handler: handler}
 	g.Add(func() error {
@@ -294,5 +374,13 @@ func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOp
 		if err := server.Shutdown(ctx); err != nil {
 			log.Error("Error shutting down prometheus server", slog.Any("err", err))
 		}
+
+		if cardSvc != nil {
+			if err := cardSvc.Close(); err != nil {
+				log.Error("Error closing cardinality service", slog.Any("err", err))
+			}
+		}
 	})
+
+	return nil
 }

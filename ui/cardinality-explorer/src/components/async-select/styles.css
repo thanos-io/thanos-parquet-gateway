@@ -1,0 +1,5 @@
+/* react-select focused option styling */
+.react-select__option--is-focused {
+  background-color: hsl(var(--color-accent)) !important;
+  color: hsl(var(--color-accent-foreground)) !important;
+}
