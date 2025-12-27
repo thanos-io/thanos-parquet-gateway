@@ -55,8 +55,9 @@ type conversionOpts struct {
 	blockDownloadConcurrency int
 	encodingConcurrency      int
 	writeConcurrency         int
-
-	tempDir string
+	minTimeOffset            time.Duration
+	maxTimeOffset            time.Duration
+	tempDir                  string
 }
 
 func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
@@ -76,6 +77,9 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.recompress", "recompress chunks").Default("true").BoolVar(&opts.recompress)
 	cmd.Flag("convert.grace-period", "dont convert for dates younger than this").Default("48h").DurationVar(&opts.gracePeriod)
 	cmd.Flag("convert.max-plan-days", "soft limit for the number of days to plan conversions for").Default("2").IntVar(&opts.maxDays)
+	// Time-based filtering for conversion window
+	cmd.Flag("convert.min-time", "relative start offset for conversion window (e.g. -168h). Conversion rounds to day start (00:00:00 UTC)").Default("0s").DurationVar(&opts.minTimeOffset)
+	cmd.Flag("convert.max-time", "relative end offset for conversion window (e.g. -48h). Conversion rounds to next day start (exclusive)").Default("0s").DurationVar(&opts.maxTimeOffset)
 
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
@@ -158,7 +162,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 						return err
 					}
 					log.Info("Converting next blocks", "sort_by", opts.conversion.sortLabels)
-					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion); err != nil {
+					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion, opts.conversion.minTimeOffset, opts.conversion.maxTimeOffset); err != nil {
 						log.Error("Unable to convert blocks", "error", err)
 						return err
 					}
@@ -185,6 +189,8 @@ func advanceConversion(
 	tsdbDiscoverer *locate.TSDBDiscoverer,
 	parquetDiscoverer *locate.Discoverer,
 	opts conversionOpts,
+	minTimeOffset time.Duration,
+	maxTimeOffset time.Duration,
 ) error {
 	blkDir := filepath.Join(opts.tempDir, ".blocks")
 	bufferDir := filepath.Join(opts.tempDir, ".buffers")
@@ -199,8 +205,9 @@ func advanceConversion(
 
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
+	// Build planner with optional time window (offsets zero => no filtering).
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas, minTimeOffset, maxTimeOffset)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
