@@ -720,10 +720,8 @@ func (s *splitPipeFileWriter) Close() error {
 		if err := fw.pw.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("unable to close pipewriter: %w", err))
 		}
-		if fw.bw != nil {
-			if err := fw.bw.Flush(); err != nil {
-				errs = append(errs, fmt.Errorf("unable to flush buffered writer: %w", err))
-			}
+		if err := fw.bw.Flush(); err != nil {
+			errs = append(errs, fmt.Errorf("unable to flush buffered writer: %w", err))
 		}
 		if err := fw.w.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("unable to close writer: %w", err))
