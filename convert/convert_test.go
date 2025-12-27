@@ -286,3 +286,115 @@ func nameColumnValuesAreIncreasing(pf *parquet.File) error {
 	}
 	return nil
 }
+
+// headBlockWithExternalLabels wraps a HeadBlock and adds external labels support for testing
+type headBlockWithExternalLabels struct {
+	*HeadBlock
+	extLabels labels.Labels
+}
+
+func (h *headBlockWithExternalLabels) ExternalLabels() labels.Labels {
+	return h.extLabels
+}
+
+func TestConverterWithExternalLabels(t *testing.T) {
+	st := teststorage.New(t)
+	t.Cleanup(func() { _ = st.Close() })
+
+	bkt, err := filesystem.NewBucket(t.TempDir())
+	if err != nil {
+		t.Fatalf("unable to create bucket: %s", err)
+	}
+	t.Cleanup(func() { _ = bkt.Close() })
+
+	app := st.Appender(t.Context())
+	for i := range 100 {
+		lbls := labels.FromStrings(
+			"__name__", "test_metric",
+			"instance", fmt.Sprintf("instance_%d", i),
+		)
+		_, err := app.Append(0, lbls, time.Second.Milliseconds(), float64(i))
+		if err != nil {
+			t.Fatalf("unable to append sample: %s", err)
+		}
+	}
+	if err := app.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+
+	h := st.Head()
+	ts := time.UnixMilli(h.MinTime()).UTC()
+	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+	blk := &headBlockWithExternalLabels{
+		HeadBlock: &HeadBlock{Head: h},
+		extLabels: labels.FromStrings("region", "us-west-2"),
+	}
+
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{blk}, []ConvertOption{
+		SortBy(labels.MetricName),
+		RowGroupSize(50),
+		RowGroupCount(1),
+	}...); err != nil {
+		t.Fatalf("unable to convert tsdb block: %s", err)
+	}
+
+	discoverer := locate.NewDiscoverer(bkt)
+	if err := discoverer.Discover(t.Context()); err != nil {
+		t.Fatalf("unable to discover parquet block: %s", err)
+	}
+
+	metas := discoverer.Metas()
+	if len(metas) != 1 {
+		t.Fatalf("expected 1 meta, got %d", len(metas))
+	}
+	meta := metas[slices.Collect(maps.Keys(metas))[0]]
+
+	pf, err := loadParquetFile(t.Context(), bkt, schema.LabelsPfileNameForShard(meta.Name, 0))
+	if err != nil {
+		t.Fatalf("unable to load parquet file: %s", err)
+	}
+
+	regionCol, ok := pf.Schema().Lookup(schema.LabelNameToColumn("region"))
+	if !ok {
+		t.Fatal("region column not found in schema")
+	}
+
+	// Verify region value exists in at least one row
+	found := false
+	for _, rg := range pf.RowGroups() {
+		pages := rg.ColumnChunks()[regionCol.ColumnIndex].Pages()
+		for {
+			p, err := pages.ReadPage()
+			if errors.Is(err, io.EOF) || p == nil {
+				break
+			}
+			if err != nil {
+				t.Fatalf("unable to read page: %s", err)
+			}
+
+			vals := make([]parquet.Value, 1)
+			for {
+				n, err := p.Values().ReadValues(vals)
+				if n > 0 && vals[0].String() == "us-west-2" {
+					found = true
+					break
+				}
+				if err != nil {
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		pages.Close()
+		if found {
+			break
+		}
+	}
+
+	if !found {
+		t.Fatal("region=us-west-2 not found in converted data")
+	}
+}
