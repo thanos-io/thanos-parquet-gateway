@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/tsdb/tombstones"
+	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/zeropool"
 	"github.com/thanos-io/objstore"
 	"google.golang.org/protobuf/proto"
@@ -44,6 +45,8 @@ type Convertible interface {
 	Meta() tsdb.BlockMeta
 	Dir() string
 	Close() error
+	// ExternalLabels returns the external labels for this block (e.g. from Thanos metadata)
+	ExternalLabels() labels.Labels
 }
 
 // This is mostly used for testing when using tsdb.Head as Convertible.
@@ -53,6 +56,27 @@ type HeadBlock struct {
 
 func (hb *HeadBlock) Dir() string {
 	return ""
+}
+
+func (hb *HeadBlock) ExternalLabels() labels.Labels {
+	return labels.EmptyLabels()
+}
+
+// BlockWithExternalLabels wraps a tsdb.Block and adds external labels support
+type BlockWithExternalLabels struct {
+	*tsdb.Block
+	externalLabels labels.Labels
+}
+
+func NewBlockWithExternalLabels(block *tsdb.Block, externalLabels labels.Labels) *BlockWithExternalLabels {
+	return &BlockWithExternalLabels{
+		Block:          block,
+		externalLabels: externalLabels,
+	}
+}
+
+func (b *BlockWithExternalLabels) ExternalLabels() labels.Labels {
+	return b.externalLabels
 }
 
 type convertOpts struct {
@@ -349,16 +373,27 @@ func shardedIndexRowReader(
 			closers = append(closers, tombsr)
 			allClosers = append(allClosers, tombsr)
 
+			// Get external labels for this block
+			externalLabels := blk.ExternalLabels()
+
 			// Flatten series refs and add all label columns to schema for the shard
 			refs := make([]storage.SeriesRef, 0, len(blockSeries))
 			for _, series := range blockSeries {
 				refs = append(refs, series.ref)
+				// Add series labels to schema
 				series.labels.Range(func(l labels.Label) {
+					labelNames[l.Name] = struct{}{}
+				})
+				// Add external labels to schema
+				externalLabels.Range(func(l labels.Label) {
 					labelNames[l.Name] = struct{}{}
 				})
 			}
 			postings := index.NewListPostings(refs)
-			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
+
+			// Wrap the series set to inject external labels
+			baseSeriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
+			seriesSet := newExternalLabelInjectingSeriesSet(baseSeriesSet, externalLabels)
 			seriesSets = append(seriesSets, seriesSet)
 		}
 
@@ -504,6 +539,64 @@ func compareBySortedLabelsFunc(sortedLabels []string) func(a, b labels.Labels) i
 
 		return labels.Compare(a, b)
 	}
+}
+
+// externalLabelInjectingSeriesSet wraps a ChunkSeriesSet and injects external labels into each series
+type externalLabelInjectingSeriesSet struct {
+	base           storage.ChunkSeriesSet
+	externalLabels labels.Labels
+}
+
+func newExternalLabelInjectingSeriesSet(base storage.ChunkSeriesSet, externalLabels labels.Labels) storage.ChunkSeriesSet {
+	if externalLabels.IsEmpty() {
+		return base
+	}
+	return &externalLabelInjectingSeriesSet{
+		base:           base,
+		externalLabels: externalLabels,
+	}
+}
+
+func (s *externalLabelInjectingSeriesSet) Next() bool {
+	return s.base.Next()
+}
+
+func (s *externalLabelInjectingSeriesSet) At() storage.ChunkSeries {
+	baseSeries := s.base.At()
+	return &externalLabelInjectingSeries{
+		base:           baseSeries,
+		externalLabels: s.externalLabels,
+	}
+}
+
+func (s *externalLabelInjectingSeriesSet) Err() error {
+	return s.base.Err()
+}
+
+func (s *externalLabelInjectingSeriesSet) Warnings() annotations.Annotations {
+	return s.base.Warnings()
+}
+
+// externalLabelInjectingSeries wraps a ChunkSeries and merges external labels with series labels
+type externalLabelInjectingSeries struct {
+	base           storage.ChunkSeries
+	externalLabels labels.Labels
+}
+
+func (s *externalLabelInjectingSeries) Labels() labels.Labels {
+	// Merge external labels with series labels
+	// External labels should not override series labels
+	builder := labels.NewBuilder(s.base.Labels())
+	s.externalLabels.Range(func(l labels.Label) {
+		if !s.base.Labels().Has(l.Name) {
+			builder.Set(l.Name, l.Value)
+		}
+	})
+	return builder.Labels()
+}
+
+func (s *externalLabelInjectingSeries) Iterator(iterator chunks.Iterator) chunks.Iterator {
+	return s.base.Iterator(iterator)
 }
 
 type converter struct {
