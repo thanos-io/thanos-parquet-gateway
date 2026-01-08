@@ -47,6 +47,7 @@ type conversionOpts struct {
 
 	gracePeriod              time.Duration
 	maxDays                  int
+	maxDaysBack              int
 	recompress               bool
 	sortLabels               []string
 	rowGroupSize             int
@@ -76,6 +77,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.recompress", "recompress chunks").Default("true").BoolVar(&opts.recompress)
 	cmd.Flag("convert.grace-period", "dont convert for dates younger than this").Default("48h").DurationVar(&opts.gracePeriod)
 	cmd.Flag("convert.max-plan-days", "soft limit for the number of days to plan conversions for").Default("2").IntVar(&opts.maxDays)
+	cmd.Flag("convert.max-days-back", "limit conversion to this many days back (0 = no limit)").Default("0").IntVar(&opts.maxDaysBack)
 
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
@@ -200,7 +202,11 @@ func advanceConversion(
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	var notBefore time.Time
+	if opts.maxDaysBack > 0 {
+		notBefore = time.Now().AddDate(0, 0, -opts.maxDaysBack).Truncate(24 * time.Hour)
+	}
+	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), notBefore, opts.maxDays).Plan(tsdbMetas, parquetMetas)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
