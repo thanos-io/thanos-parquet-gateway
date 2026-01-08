@@ -202,11 +202,12 @@ func advanceConversion(
 	parquetMetas := parquetDiscoverer.Metas()
 	tsdbMetas := tsdbDiscoverer.Metas()
 
+	notAfter := time.Now().Add(-opts.gracePeriod)
 	var notBefore time.Time
 	if opts.maxDaysBack > 0 {
 		notBefore = time.Now().AddDate(0, 0, -opts.maxDaysBack).Truncate(24 * time.Hour)
 	}
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), notBefore, opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	plan := convert.NewPlanner(notAfter, notBefore, opts.maxDays).Plan(tsdbMetas, parquetMetas)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
