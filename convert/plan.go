@@ -44,14 +44,16 @@ type Plan struct {
 type Planner struct {
 	// Do not create parquet blocks that are younger then this.
 	notAfter time.Time
+	// Do not create parquet blocks that are older then this.
+	notBefore time.Time
 	// Maximum number of days to plan conversions for. Planner might still produce a plan with more days
 	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
 	// for the next plan.
 	maxDays int
 }
 
-func NewPlanner(notAfter time.Time, maxDays int) Planner {
-	return Planner{notAfter: notAfter, maxDays: maxDays}
+func NewPlanner(notAfter, notBefore time.Time, maxDays int) Planner {
+	return Planner{notAfter: notAfter, notBefore: notBefore, maxDays: maxDays}
 }
 
 func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
@@ -76,6 +78,11 @@ func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[strin
 	for date, metas := range tsdbDates {
 		if !date.ToTime().Before(p.notAfter) {
 			// Ignore TSDB blocks that are for dates excluded from conversions.
+			continue
+		}
+
+		if date.ToTime().Before(p.notBefore) {
+			// Ignore TSDB blocks that are too old.
 			continue
 		}
 
