@@ -38,6 +38,7 @@ func main() {
 	app.Version(version.Print()) // Use proper version information
 	memratio := app.Flag("memlimit.ratio", "gomemlimit ratio").Default("0.9").Float()
 	logLevel := app.Flag("logger.level", "log level").Default("INFO").Enum("DEBUG", "INFO", "WARN", "ERROR")
+	metricsPrefix := app.Flag("metrics.prefix", "prefix for all metrics").Default("cf_metrics_").String()
 
 	tsdbConvert, tsdbConvertF := registerConvertApp(app)
 	serve, serveF := registerServeApp(app)
@@ -57,7 +58,7 @@ func main() {
 		),
 	)
 
-	reg, err := setupPrometheusRegistry()
+	reg, err := setupPrometheusRegistry(*metricsPrefix)
 	if err != nil {
 		log.Error("Could not setup prometheus", slog.Any("err", err))
 		return
@@ -90,9 +91,9 @@ func main() {
 	log.Info("Done")
 }
 
-func setupPrometheusRegistry() (*prometheus.Registry, error) {
+func setupPrometheusRegistry(metricsPrefix string) (*prometheus.Registry, error) {
 	reg := prometheus.NewRegistry()
-	registerer := prometheus.WrapRegistererWithPrefix("cf_metrics_", reg)
+	registerer := prometheus.WrapRegistererWithPrefix(metricsPrefix, reg)
 
 	if err := errors.Join(
 		locate.RegisterMetrics(prometheus.WrapRegistererWithPrefix("locate_", registerer)),

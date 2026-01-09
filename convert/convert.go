@@ -15,6 +15,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -69,6 +70,8 @@ type convertOpts struct {
 	labelPageBufferSize int
 	chunkPageBufferSize int
 	writeConcurrency    int
+
+	metricsTTL time.Duration
 }
 
 func (cfg convertOpts) buildBloomfilterColumns() []parquet.BloomFilterColumn {
