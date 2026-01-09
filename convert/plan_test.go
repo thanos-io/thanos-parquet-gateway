@@ -541,8 +541,8 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 
 		notAfter     time.Time
 		maxDays      int
-		minOffset    time.Duration // Changed from int64 to time.Duration
-		maxOffset    time.Duration // Changed from int64 to time.Duration
+		minOffset    time.Duration
+		maxOffset    time.Duration
 		tsdbMetas    map[string]metadata.Meta
 		parquetMetas map[string]schema.Meta
 
@@ -552,8 +552,8 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 			name:      "zero time offsets means no filtering - all dates included",
 			notAfter:  time.UnixMilli(math.MaxInt64),
 			maxDays:   10,
-			minOffset: 0, // No lower bound
-			maxOffset: 0, // No upper bound
+			minOffset: 0,
+			maxOffset: 0,
 			tsdbMetas: map[string]metadata.Meta{
 				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
 					BlockMeta: tsdb.BlockMeta{
@@ -585,20 +585,6 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 				},
 			},
 		},
-		// Note: The following tests won't work as expected because they use fixed dates from 2020
-		// but time.Duration offsets are relative to time.Now()
-		// These tests should be redesigned or the Plan() signature should accept absolute timestamps
-		// For now, commenting out the time-window specific tests
-		/*
-			{
-				name:      "time window filters correctly - specific date range",
-				notAfter:  time.UnixMilli(math.MaxInt64),
-				maxDays:   10,
-				minOffset: -168 * time.Hour, // 7 days ago
-				maxOffset: -48 * time.Hour,  // 2 days ago
-				// ... this won't work with fixed 2020 test data
-			},
-		*/
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
 			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas, tc.minOffset, tc.maxOffset)

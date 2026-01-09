@@ -54,68 +54,55 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-// Plan creates a conversion plan for the given time range.
-// minOffset and maxOffset are relative time offsets (e.g., -168h for 7 days ago).
-// These will be calculated from now() and rounded to day boundaries:
-//   - minOffset rounds DOWN to start of day (00:00:00 UTC)
-//   - maxOffset rounds UP to start of next day (00:00:00 UTC, exclusive)
-//
-// If both are 0, no time filtering is applied.
 func (p Planner) Plan(
 	tsdbMetas map[string]metadata.Meta,
 	parquetMetas map[string]schema.Meta,
-	minOffset time.Duration, // Relative time offset (0 = no lower bound)
-	maxOffset time.Duration, // Relative time offset (0 = no upper bound)
+	minOffset time.Duration,
+	maxOffset time.Duration,
 ) Plan {
-	// Pre-compute window day bounds if time range is specified.
+
 	var (
 		windowActive bool
 		winStartDay  time.Time
-		winEndDay    time.Time // exclusive
+		winEndDay    time.Time
 	)
 
 	if minOffset != 0 || maxOffset != 0 {
 		windowActive = true
 		now := time.Now()
 
-		// Round minOffset DOWN to start of day (00:00:00 UTC)
 		if minOffset != 0 {
 			t := now.Add(minOffset).UTC()
 			winStartDay = util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
 		}
 
-		// Round maxOffset UP to start of next day (00:00:00 UTC, exclusive)
 		if maxOffset != 0 {
 			t := now.Add(maxOffset).UTC()
-			// Get the date, convert to time.Time, add 1 day
 			dateTime := util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
 			winEndDay = dateTime.AddDate(0, 0, 1)
 		}
 	}
-
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
 	for _, tsdb := range tsdbMetas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
-			// Apply window filtering early: skip dates outside window when active.
 			if windowActive {
 				pt := partialDate.ToTime()
 				if minOffset != 0 && pt.Before(winStartDay) {
-					continue // Before window
+					continue
 				}
 				if maxOffset != 0 && !pt.Before(winEndDay) {
-					continue // After or at window end
+					continue
 				}
 			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
 
-	// Make a list of days covered by parquet blocks.
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquetMetas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
-			// Apply same window filtering for existing parquet coverage when active.
+
 			if windowActive {
 				pt := partialDate.ToTime()
 				if minOffset != 0 && pt.Before(winStartDay) {
