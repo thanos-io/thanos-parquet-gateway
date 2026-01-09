@@ -57,6 +57,8 @@ type conversionOpts struct {
 	writeConcurrency         int
 
 	tempDir string
+
+	metricsTTL time.Duration
 }
 
 func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
@@ -84,6 +86,7 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.download.block-concurrency", "concurrency for downloading & opening multiple blocks in parallel").Default("1").IntVar(&opts.blockDownloadConcurrency)
 	cmd.Flag("convert.encoding.concurrency", "concurrency for encoding chunks").Default("4").IntVar(&opts.encodingConcurrency)
 	cmd.Flag("convert.write.concurrency", "concurrency for writer").Default("4").IntVar(&opts.writeConcurrency)
+	cmd.Flag("convert.metrics-ttl", "time to live for conversion metrics").Default("30s").DurationVar(&opts.metricsTTL)
 }
 
 func (opts *bucketOpts) registerConvertParquetFlags(cmd *kingpin.CmdClause) {
@@ -213,58 +216,67 @@ func advanceConversion(
 	log.Info("Starting plan conversions")
 	var (
 		stepBlocks, prevBlocks []convert.Convertible
-		err                    error
 	)
 	// Process each step (day) one by one, keeping blocks shared between steps on disk.
 	for _, step := range plan.Steps {
-		// Close blocks that were open in the previous step but are no longer needed.
-		prevBlocks = closeUnused(log, step.Sources, prevBlocks)
+		tracker := convert.NewConversionTracker(step.Date, opts.metricsTTL)
+		err := func() (err error) {
+			// Close blocks that were open in the previous step but are no longer needed.
+			prevBlocks = closeUnused(log, step.Sources, prevBlocks)
 
-		ulids := ulidsFromMetas(step.Sources)
-		log.Info("Converting date", slog.String("date", step.Date.String()), slog.Any("ulids", ulids))
+			ulids := ulidsFromMetas(step.Sources)
+			log.Info("Converting date", slog.String("date", step.Date.String()), slog.Any("ulids", ulids))
 
-		toDownload := blocksToDownload(step.Sources, prevBlocks)
-		log.Info("Blocks from previous step", slog.Any("ulids", ulidsFromConvertible(prevBlocks)))
-		log.Info("Blocks to download", slog.Any("ulids", ulidsFromMetas(toDownload)))
-		stepBlocks, err = downloadedBlocks(ctx, log, tsdbBkt, toDownload, blkDir, opts)
+			toDownload := blocksToDownload(step.Sources, prevBlocks)
+			log.Info("Blocks from previous step", slog.Any("ulids", ulidsFromConvertible(prevBlocks)))
+			log.Info("Blocks to download", slog.Any("ulids", ulidsFromMetas(toDownload)))
+			tracker.MarkDownloadingBlocks(log)
+			stepBlocks, err = downloadedBlocks(ctx, log, tsdbBkt, toDownload, blkDir, opts)
+			if err != nil {
+				// NOTE: we might have managed to open a few blocks, make sure to close them too.
+				closeBlocks(log, prevBlocks...)
+				closeBlocks(log, stepBlocks...)
+				return fmt.Errorf("download_blocks_error: unable to download tsdb blocks: %w", err)
+			}
+			log.Info("Blocks downloaded", slog.Int("count", len(stepBlocks)))
+			// So far stepBlocks is only blocks we needed to download, add blocks already downloaded in previous step.
+			stepBlocks = append(stepBlocks, prevBlocks...)
+
+			for _, blk := range stepBlocks {
+				meta := blk.Meta()
+				log.Info("TSDB block details",
+					slog.String("ulid", meta.ULID.String()),
+					slog.String("minTime", time.UnixMilli(meta.MinTime).UTC().Format(time.RFC3339)),
+					slog.String("maxTime", time.UnixMilli(meta.MaxTime).UTC().Format(time.RFC3339)),
+					slog.Uint64("series", meta.Stats.NumSeries),
+					slog.Uint64("chunks", meta.Stats.NumChunks),
+					slog.Uint64("samples", meta.Stats.NumSamples),
+				)
+			}
+
+			log.Info("Starting conversion", slog.String("date", step.Date.String()))
+			convOpts := []convert.ConvertOption{
+				convert.SortBy(opts.sortLabels...),
+				convert.RowGroupSize(opts.rowGroupSize),
+				convert.RowGroupCount(opts.rowGroupCount),
+				convert.EncodingConcurrency(opts.encodingConcurrency),
+				convert.WriteConcurrency(opts.writeConcurrency),
+				convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
+			}
+			tracker.MarkConversionInProgress()
+			if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
+				closeBlocks(log, stepBlocks...)
+				return fmt.Errorf("conversion_error: unable to convert blocks for date %q: %s", step.Date, err)
+			}
+			log.Info("Conversion completed", slog.String("date", step.Date.String()))
+
+			prevBlocks = stepBlocks
+			return nil
+		}()
+		tracker.MarkConversionEnd(log, err)
 		if err != nil {
-			// NOTE: we might have managed to open a few blocks, make sure to close them too.
-			closeBlocks(log, prevBlocks...)
-			closeBlocks(log, stepBlocks...)
-			return fmt.Errorf("unable to download tsdb blocks: %w", err)
+			return err
 		}
-		log.Info("Blocks downloaded", slog.Int("count", len(stepBlocks)))
-		// So far stepBlocks is only blocks we needed to download, add blocks already downloaded in previous step.
-		stepBlocks = append(stepBlocks, prevBlocks...)
-
-		for _, blk := range stepBlocks {
-			meta := blk.Meta()
-			log.Info("TSDB block details",
-				slog.String("ulid", meta.ULID.String()),
-				slog.String("minTime", time.UnixMilli(meta.MinTime).UTC().Format(time.RFC3339)),
-				slog.String("maxTime", time.UnixMilli(meta.MaxTime).UTC().Format(time.RFC3339)),
-				slog.Uint64("series", meta.Stats.NumSeries),
-				slog.Uint64("chunks", meta.Stats.NumChunks),
-				slog.Uint64("samples", meta.Stats.NumSamples),
-			)
-		}
-
-		log.Info("Starting conversion", slog.String("date", step.Date.String()))
-		convOpts := []convert.ConvertOption{
-			convert.SortBy(opts.sortLabels...),
-			convert.RowGroupSize(opts.rowGroupSize),
-			convert.RowGroupCount(opts.rowGroupCount),
-			convert.EncodingConcurrency(opts.encodingConcurrency),
-			convert.WriteConcurrency(opts.writeConcurrency),
-			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
-		}
-		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
-			closeBlocks(log, stepBlocks...)
-			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
-		}
-		log.Info("Conversion completed", slog.String("date", step.Date.String()))
-
-		prevBlocks = stepBlocks
 	}
 	log.Info("Plan completed")
 
