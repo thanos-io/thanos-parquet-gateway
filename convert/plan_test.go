@@ -512,7 +512,82 @@ func TestPlanner(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas)
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas, 0, 0)
+
+			if diff := cmp.Diff(tc.expectedPlan, plan,
+				cmpopts.IgnoreUnexported(),
+				cmpopts.EquateComparable(util.Date{}),
+				cmpopts.IgnoreFields(tsdb.BlockMeta{}, "MinTime", "MaxTime"),
+			); diff != "" {
+				tt.Errorf("plan mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestPlannerWithTimeWindow(t *testing.T) {
+	mockBlocks := func(ulids ...string) []metadata.Meta {
+		metas := make([]metadata.Meta, 0, len(ulids))
+		for _, v := range ulids {
+			metas = append(metas, metadata.Meta{
+				BlockMeta: tsdb.BlockMeta{ULID: ulid.MustParse(v)},
+			})
+		}
+		return metas
+	}
+
+	for _, tc := range []struct {
+		name string
+
+		notAfter     time.Time
+		maxDays      int
+		minOffset    time.Duration
+		maxOffset    time.Duration
+		tsdbMetas    map[string]metadata.Meta
+		parquetMetas map[string]schema.Meta
+
+		expectedPlan Plan
+	}{
+		{
+			name:      "zero time offsets means no filtering - all dates included",
+			notAfter:  time.UnixMilli(math.MaxInt64),
+			maxDays:   10,
+			minOffset: 0,
+			maxOffset: 0,
+			tsdbMetas: map[string]metadata.Meta{
+				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+			},
+			parquetMetas: map[string]schema.Meta{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:    util.NewDate(2020, time.January, 4),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 3),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 2),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 1),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(tt *testing.T) {
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas, tc.minOffset, tc.maxOffset)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
