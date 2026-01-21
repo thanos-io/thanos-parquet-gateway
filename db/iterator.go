@@ -41,7 +41,7 @@ type errSeriesIterator struct {
 	err error
 }
 
-func (errSeriesIterator) Seek(int64) chunkenc.ValueType { return chunkenc.ValNone }
+func (errSeriesIterator) Seek(int64) chunkenc.ValueType { return chunkenc.ValNone } //nolint:govet
 func (errSeriesIterator) Next() chunkenc.ValueType      { return chunkenc.ValNone }
 func (errSeriesIterator) At() (int64, float64)          { return 0, 0 }
 func (errSeriesIterator) AtHistogram(*histogram.Histogram) (int64, *histogram.Histogram) {
@@ -68,7 +68,7 @@ func newChunkSeriesIterator(cs []chunkenc.Iterator) chunkenc.Iterator {
 	return &chunkSeriesIterator{chunks: cs, cur: cs[0]}
 }
 
-func (it *chunkSeriesIterator) Seek(t int64) chunkenc.ValueType {
+func (it *chunkSeriesIterator) Seek(t int64) chunkenc.ValueType { //nolint:govet
 	// We generally expect the chunks already to be cut down
 	// to the range we are interested in. There's not much to be gained from
 	// hopping across chunks so we just call next until we reach t.
@@ -134,7 +134,7 @@ func newBoundedSeriesIterator(it chunkenc.Iterator, mint, maxt int64) *boundedSe
 	return &boundedSeriesIterator{it: it, mint: mint, maxt: maxt}
 }
 
-func (it *boundedSeriesIterator) Seek(t int64) chunkenc.ValueType {
+func (it *boundedSeriesIterator) Seek(t int64) chunkenc.ValueType { //nolint:govet
 	if t > it.maxt {
 		return chunkenc.ValNone
 	}

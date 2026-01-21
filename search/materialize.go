@@ -93,9 +93,7 @@ func materializeSeries(
 		}
 
 		for i, c := range chks {
-			for j := range c {
-				res[i].Chunks = append(res[i].Chunks, c[j])
-			}
+			res[i].Chunks = append(res[i].Chunks, c...)
 		}
 		return nil
 	})
@@ -981,66 +979,6 @@ func partitionPageRanges(
 		r = append(r, pagesToRead)
 	}
 	return r
-}
-
-type labelValuesIterator struct {
-	p parquet.Page
-
-	cachedSymbols map[int32]parquet.Value
-	st            symbolTable
-
-	vr parquet.ValueReader
-
-	current            int
-	buffer             []parquet.Value
-	currentBufferIndex int
-	err                error
-}
-
-func (vi *labelValuesIterator) Reset(p parquet.Page) {
-	vi.p = p
-	vi.vr = p.Values()
-	vi.st.Reset(p)
-	vi.cachedSymbols = make(map[int32]parquet.Value, p.Dictionary().Len())
-	vi.current = -1
-}
-
-func (vi *labelValuesIterator) Next() bool {
-	if vi.err != nil {
-		return false
-	}
-
-	vi.current++
-	if vi.current >= int(vi.p.NumRows()) {
-		return false
-	}
-
-	vi.currentBufferIndex++
-
-	if vi.currentBufferIndex == len(vi.buffer) {
-		n, err := vi.vr.ReadValues(vi.buffer[:cap(vi.buffer)])
-		if err != nil && err != io.EOF {
-			vi.err = err
-			return false
-		}
-		vi.buffer = vi.buffer[:n]
-		vi.currentBufferIndex = 0
-	}
-	return true
-}
-
-func (vi *labelValuesIterator) Error() error {
-	return vi.err
-}
-
-func (vi *labelValuesIterator) At() parquet.Value {
-	sym := vi.st.GetIndex(vi.current)
-	// Cache a clone of the current symbol table entry.
-	// This allows us to release the original page while avoiding unnecessary future clones.
-	if _, ok := vi.cachedSymbols[sym]; !ok {
-		vi.cachedSymbols[sym] = vi.st.Get(vi.current).Clone()
-	}
-	return vi.cachedSymbols[sym]
 }
 
 type chunkValuesIterator struct {

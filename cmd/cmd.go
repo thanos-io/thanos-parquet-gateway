@@ -47,7 +47,7 @@ func main() {
 		Level: logLevelMap[*logLevel],
 	}))
 
-	memlimit.SetGoMemLimitWithOpts(
+	_, err := memlimit.SetGoMemLimitWithOpts(
 		memlimit.WithRatio(*memratio),
 		memlimit.WithProvider(
 			memlimit.ApplyFallback(
@@ -56,6 +56,10 @@ func main() {
 			),
 		),
 	)
+	if err != nil {
+		log.Error("Could not set GOMEMLIMIT", slog.Any("err", err))
+		return
+	}
 
 	reg, err := setupPrometheusRegistry()
 	if err != nil {

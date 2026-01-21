@@ -208,9 +208,7 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	}
 	if warnings := res.Warnings.AsErrors(); len(warnings) > 0 {
 		errs := make([]error, 0, len(warnings))
-		for _, warning := range warnings {
-			errs = append(errs, warning)
-		}
+		errs = append(errs, warnings...)
 		if err = srv.SendMsg(querypb.NewQueryWarningsResponse(errs...)); err != nil {
 			return err
 		}
@@ -272,9 +270,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	}
 	if warnings := res.Warnings.AsErrors(); len(warnings) > 0 {
 		errs := make([]error, 0, len(warnings))
-		for _, warning := range warnings {
-			errs = append(errs, warning)
-		}
+		errs = append(errs, warnings...)
 		if err = srv.SendMsg(querypb.NewQueryWarningsResponse(errs...)); err != nil {
 			return err
 		}

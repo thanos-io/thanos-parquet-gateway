@@ -510,10 +510,9 @@ type converter struct {
 	name       string
 	mint, maxt int64
 
-	shard          int
-	seriesPerShard int
-	rowGroupSize   int
-	numRowGroups   int
+	shard        int
+	rowGroupSize int
+	numRowGroups int
 
 	bkt objstore.Bucket
 
@@ -621,25 +620,6 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	}
 
 	return true, nil
-}
-
-type limitReader struct {
-	parquet.RowReader
-	limit int
-	cur   int
-}
-
-func (lr *limitReader) ReadRows(buf []parquet.Row) (int, error) {
-	n, err := lr.RowReader.ReadRows(buf)
-	if err != nil {
-		return n, err
-	}
-	lr.cur += n
-
-	if lr.cur > lr.limit {
-		return n, io.EOF
-	}
-	return n, nil
 }
 
 type fileWriter struct {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	fuzz "github.com/AdaLogics/go-fuzz-headers"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
 
@@ -23,7 +24,7 @@ func FuzzEncodeLabelColumnIndex(f *testing.F) {
 		var (
 			in []int
 		)
-		fz.CreateSlice(&in)
+		require.NoError(t, fz.CreateSlice(&in))
 
 		decoded, err := DecodeLabelColumnIndex(EncodeLabelColumnIndex(in))
 		if err != nil {

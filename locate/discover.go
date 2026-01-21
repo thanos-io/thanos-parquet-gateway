@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math"
 	"slices"
@@ -23,12 +24,14 @@ import (
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/compact/downsample"
 
+	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type discoveryConfig struct {
 	concurrency int
+	l           *slog.Logger
 }
 
 type DiscoveryOption func(*discoveryConfig)
@@ -39,6 +42,12 @@ func MetaConcurrency(c int) DiscoveryOption {
 	}
 }
 
+func Logger(l *slog.Logger) DiscoveryOption {
+	return func(cfg *discoveryConfig) {
+		cfg.l = l
+	}
+}
+
 type Discoverer struct {
 	bkt objstore.Bucket
 
@@ -46,11 +55,14 @@ type Discoverer struct {
 	metas map[string]schema.Meta
 
 	concurrency int
+
+	l *slog.Logger
 }
 
 func NewDiscoverer(bkt objstore.Bucket, opts ...DiscoveryOption) *Discoverer {
 	cfg := discoveryConfig{
 		concurrency: 1,
+		l:           slog.Default(),
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -59,6 +71,7 @@ func NewDiscoverer(bkt objstore.Bucket, opts ...DiscoveryOption) *Discoverer {
 		bkt:         bkt,
 		metas:       make(map[string]schema.Meta),
 		concurrency: cfg.concurrency,
+		l:           cfg.l,
 	}
 }
 
@@ -120,7 +133,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 			go func() {
 				defer wg.Done()
 				for k := range workerC {
-					meta, err := readMetaFile(ctx, s.bkt, k)
+					meta, err := readMetaFile(ctx, s.bkt, k, s.l)
 					if err != nil {
 						metaC <- metaOrError{err: fmt.Errorf("unable to read meta file for %q: %w", k, err)}
 					} else {
@@ -173,7 +186,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 	return nil
 }
 
-func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string) (schema.Meta, error) {
+func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string, l *slog.Logger) (schema.Meta, error) {
 	mfile := schema.MetaFileNameForBlock(name)
 	if _, err := bkt.Attributes(ctx, mfile); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
@@ -182,7 +195,7 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string) (schema
 	if err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to get %s: %w", mfile, err)
 	}
-	defer rdr.Close()
+	defer slogerrcapture.Do(l, rdr.Close, "closing meta file reader %s", mfile)
 
 	metaBytes, err := io.ReadAll(rdr)
 	if err != nil {
@@ -214,6 +227,7 @@ type tsdbDiscoveryConfig struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	l                     *slog.Logger
 }
 
 type TSDBDiscoveryOption func(*tsdbDiscoveryConfig)
@@ -227,6 +241,12 @@ func TSDBMetaConcurrency(c int) TSDBDiscoveryOption {
 func TSDBMatchExternalLabels(ms ...*labels.Matcher) TSDBDiscoveryOption {
 	return func(cfg *tsdbDiscoveryConfig) {
 		cfg.externalLabelMatchers = ms
+	}
+}
+
+func WithLogger(l *slog.Logger) TSDBDiscoveryOption {
+	return func(cfg *tsdbDiscoveryConfig) {
+		cfg.l = l
 	}
 }
 
@@ -246,11 +266,13 @@ type TSDBDiscoverer struct {
 	minBlockAge           time.Duration
 
 	concurrency int
+	l           *slog.Logger
 }
 
 func NewTSDBDiscoverer(bkt objstore.Bucket, opts ...TSDBDiscoveryOption) *TSDBDiscoverer {
 	cfg := tsdbDiscoveryConfig{
 		concurrency: 1,
+		l:           slog.Default(),
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -261,6 +283,7 @@ func NewTSDBDiscoverer(bkt objstore.Bucket, opts ...TSDBDiscoveryOption) *TSDBDi
 		concurrency:           cfg.concurrency,
 		externalLabelMatchers: cfg.externalLabelMatchers,
 		minBlockAge:           cfg.minBlockAge,
+		l:                     cfg.l,
 	}
 }
 
@@ -415,7 +438,7 @@ func (s *TSDBDiscoverer) readMetaFile(ctx context.Context, name string) (metadat
 	if err != nil {
 		return metadata.Meta{}, fmt.Errorf("unable to get %s: %w", mfile, err)
 	}
-	defer rdr.Close()
+	defer slogerrcapture.Do(s.l, rdr.Close, "closing meta file reader %s", mfile)
 
 	var m metadata.Meta
 	if err := json.NewDecoder(rdr).Decode(&m); err != nil {

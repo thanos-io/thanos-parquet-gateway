@@ -291,6 +291,7 @@ func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOp
 			cfhttp.LabelValuesRowCountQuota(qOpts.labelValuesRowCountQuota),
 			cfhttp.LabelNamesRowCountQuota(qOpts.labelNamesRowCountQuota),
 			cfhttp.ShardCountQuota(qOpts.shardCountQuota),
+			cfhttp.WithLogger(log),
 		))
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", opts.port), Handler: handler}

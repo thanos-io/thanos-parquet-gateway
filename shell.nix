@@ -12,6 +12,7 @@ pkgs.mkShell {
     duckdb
     protobuf
     protoc-gen-go
+    golangci-lint
   ];
   shellHook = ''
     export PATH="$(go env GOPATH)/bin:$PATH"

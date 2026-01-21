@@ -154,7 +154,7 @@ func RemoveNullColumns(p *parquet.File) *parquet.Schema {
 				nps = append(nps, cidxs[j].NullPages...)
 			}
 		}
-		if !slices.ContainsFunc(nps, func(np bool) bool { return np == false }) {
+		if !slices.ContainsFunc(nps, func(np bool) bool { return !np }) {
 			continue
 		}
 		lc, ok := s.Lookup(c...)
