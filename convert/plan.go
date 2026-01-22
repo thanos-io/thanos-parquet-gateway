@@ -54,19 +54,64 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) Plan(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+func (p Planner) Plan(
+	tsdbMetas map[string]metadata.Meta,
+	parquetMetas map[string]schema.Meta,
+	minOffset time.Duration,
+	maxOffset time.Duration,
+) Plan {
+
+	var (
+		windowActive bool
+		winStartDay  time.Time
+		winEndDay    time.Time
+	)
+
+	if minOffset != 0 || maxOffset != 0 {
+		windowActive = true
+		now := time.Now()
+
+		if minOffset != 0 {
+			t := now.Add(minOffset).UTC()
+			winStartDay = util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+		}
+
+		if maxOffset != 0 {
+			t := now.Add(maxOffset).UTC()
+			dateTime := util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+			winEndDay = dateTime.AddDate(0, 0, 1)
+		}
+	}
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
 	for _, tsdb := range tsdbMetas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
 
-	// Make a list of days covered by parquet blocks.
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquetMetas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			pqDates[partialDate] = struct{}{}
 		}
 	}
