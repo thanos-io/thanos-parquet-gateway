@@ -6,7 +6,7 @@ package util
 
 // Intersects returns if [a, b] and [c, d] intersect.
 func Intersects(a, b, c, d int64) bool {
-	return !(c > b || a > d)
+	return !(c > b || a > d) //nolint:staticcheck
 }
 
 // Contains returns if [a, b] contains [c, d].

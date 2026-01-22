@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -19,8 +20,8 @@ import (
 	jsoniter "github.com/json-iterator/go"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	_ "github.com/prometheus/prometheus/web/api/v1" // prometheus json codecs
-	v1 "github.com/prometheus/prometheus/web/api/v1"
+	_ "github.com/prometheus/prometheus/web/api/v1"  //nolint:staticcheck // prometheus json codecs
+	v1 "github.com/prometheus/prometheus/web/api/v1" //nolint:staticcheck
 
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
@@ -36,6 +37,7 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
@@ -59,6 +61,14 @@ type queryAPI struct {
 	labelValuesRowCountQuota           int64
 	labelNamesRowCountQuota            int64
 	shardCountQuota                    int64
+
+	l *slog.Logger
+}
+
+func WithLogger(l *slog.Logger) QueryAPIOption {
+	return func(qapi *queryAPI) {
+		qapi.l = l
+	}
 }
 
 type QueryAPIOption func(*queryAPI)
@@ -158,6 +168,10 @@ func RegisterQueryV1(r *route.Router, db *db.DB, engine promql.QueryEngine, opts
 		opts[i](qapi)
 	}
 
+	if qapi.l == nil {
+		qapi.l = slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{}))
+	}
+
 	withInstrumentation(r, "/query", qapi.query)
 	withInstrumentation(r, "/query_range", qapi.queryRange)
 	withInstrumentation(r, "/series", qapi.series)
@@ -195,7 +209,7 @@ func encoder(w io.Writer) *jsoniter.Encoder {
 	return jsoniter.ConfigCompatibleWithStandardLibrary.NewEncoder(w)
 }
 
-func writeErrorResponse(w http.ResponseWriter, r errorResponse) {
+func writeErrorResponse(w http.ResponseWriter, r errorResponse, l *slog.Logger) {
 	switch r.Typ {
 	case errUnimplemented:
 		w.WriteHeader(http.StatusNotFound)
@@ -206,11 +220,13 @@ func writeErrorResponse(w http.ResponseWriter, r errorResponse) {
 	case errCanceled, errTimeout:
 		w.WriteHeader(http.StatusRequestTimeout)
 	}
-	encoder(w).Encode(apiResponse{
+	if err := encoder(w).Encode(apiResponse{
 		Status:    statusError,
 		ErrorType: r.Typ,
 		Error:     r.Err.Error(),
-	})
+	}); err != nil {
+		l.Error("failed to write error response", slog.String("type", r.Typ), slog.Any("err", err))
+	}
 }
 
 type queryResponse struct {
@@ -218,10 +234,10 @@ type queryResponse struct {
 	Result     parser.Value     `json:"result"`
 }
 
-func writeQueryResponse(w http.ResponseWriter, r *promql.Result) {
+func writeQueryResponse(w http.ResponseWriter, r *promql.Result, l *slog.Logger) {
 	w.WriteHeader(http.StatusOK)
 	warns, infos := r.Warnings.AsStrings("", 0, 0)
-	encoder(w).Encode(apiResponse{
+	if err := encoder(w).Encode(apiResponse{
 		Status: statusSuccess,
 		Data: queryResponse{
 			ResultType: r.Value.Type(),
@@ -229,29 +245,35 @@ func writeQueryResponse(w http.ResponseWriter, r *promql.Result) {
 		},
 		Warnings: warns,
 		Infos:    infos,
-	})
+	}); err != nil {
+		l.Error("failed to write query response", slog.Any("err", err))
+	}
 }
 
-func writeSeriesResponse(w http.ResponseWriter, series []labels.Labels, annos annotations.Annotations) {
+func writeSeriesResponse(w http.ResponseWriter, series []labels.Labels, annos annotations.Annotations, l *slog.Logger) {
 	w.WriteHeader(http.StatusOK)
 	warns, infos := annos.AsStrings("", 0, 0)
-	encoder(w).Encode(apiResponse{
+	if err := encoder(w).Encode(apiResponse{
 		Status:   statusSuccess,
 		Data:     series,
 		Warnings: warns,
 		Infos:    infos,
-	})
+	}); err != nil {
+		l.Error("failed to write series response", slog.Any("err", err))
+	}
 }
 
-func writeLabelsResponse(w http.ResponseWriter, values []string, annos annotations.Annotations) {
+func writeLabelsResponse(w http.ResponseWriter, values []string, annos annotations.Annotations, l *slog.Logger) {
 	w.WriteHeader(http.StatusOK)
 	warns, infos := annos.AsStrings("", 0, 0)
-	encoder(w).Encode(apiResponse{
+	if err := encoder(w).Encode(apiResponse{
 		Status:   statusSuccess,
 		Data:     values,
 		Warnings: warns,
 		Infos:    infos,
-	})
+	}); err != nil {
+		l.Error("failed to write labels response", slog.Any("err", err))
+	}
 }
 
 func parseTime(s string) (time.Time, error) {
@@ -390,18 +412,18 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 	span := tracing.SpanFromContext(ctx)
 
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)}, qapi.l)
 		return
 	}
 
 	t, err := parseTimeParam(r, "time", time.Now())
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timestamp: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timestamp: %s", err)}, qapi.l)
 		return
 	}
 	timeout, err := parseDurationParam(r, "timeout", qapi.defaultTimeout)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timeout: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timeout: %s", err)}, qapi.l)
 		return
 	}
 	q := parseQueryParam(r)
@@ -414,14 +436,14 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := qapi.concurrentQuerySemaphore.Reserve(ctx); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: fmt.Errorf("semaphore blocked: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: fmt.Errorf("semaphore blocked: %s", err)}, qapi.l)
 		return
 	}
 	defer qapi.concurrentQuerySemaphore.Release()
 
 	query, err := qapi.engine.NewInstantQuery(ctx, qapi.queryable(), qapi.queryOpts(), q, t)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create query: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create query: %s", err)}, qapi.l)
 		return
 	}
 	defer query.Close()
@@ -430,31 +452,31 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 	if err := res.Err; err != nil {
 		// storage errors
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err}, qapi.l)
 			return
 		}
 		if errors.Is(err, context.Canceled) {
-			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err}, qapi.l)
 			return
 		}
 		// promql errors
 		switch err.(type) {
 		case promql.ErrQueryCanceled:
-			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err}, qapi.l)
 		case promql.ErrQueryTimeout:
-			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err}, qapi.l)
 		case promql.ErrStorage:
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err}, qapi.l)
 		default:
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err}, qapi.l)
 		}
 		return
 	}
-	writeQueryResponse(w, res)
+	writeQueryResponse(w, res, qapi.l)
 }
 
 func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
@@ -462,28 +484,28 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 	span := tracing.SpanFromContext(ctx)
 
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)}, qapi.l)
 		return
 	}
 
 	start, err := parseTimeParam(r, "start", time.Now())
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)}, qapi.l)
 		return
 	}
 	end, err := parseTimeParam(r, "end", time.Now())
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)}, qapi.l)
 		return
 	}
 	step, err := parseDurationParam(r, "step", qapi.defaultStep)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get step: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get step: %s", err)}, qapi.l)
 		return
 	}
 	timeout, err := parseDurationParam(r, "timeout", qapi.defaultTimeout)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timeout: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get timeout: %s", err)}, qapi.l)
 		return
 	}
 	q := parseQueryParam(r)
@@ -499,14 +521,14 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := qapi.concurrentQuerySemaphore.Reserve(ctx); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: fmt.Errorf("semaphore blocked: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: fmt.Errorf("semaphore blocked: %s", err)}, qapi.l)
 		return
 	}
 	defer qapi.concurrentQuerySemaphore.Release()
 
 	query, err := qapi.engine.NewRangeQuery(ctx, qapi.queryable(), qapi.queryOpts(), q, start, end, step)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create query: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create query: %s", err)}, qapi.l)
 		return
 	}
 	defer query.Close()
@@ -515,31 +537,31 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 	if err := res.Err; err != nil {
 		// storage errors
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err}, qapi.l)
 			return
 		}
 		if errors.Is(err, context.Canceled) {
-			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err}, qapi.l)
 			return
 		}
 		// promql errors
 		switch err.(type) {
 		case promql.ErrQueryCanceled:
-			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errCanceled, Err: err}, qapi.l)
 		case promql.ErrQueryTimeout:
-			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errTimeout, Err: err}, qapi.l)
 		case promql.ErrStorage:
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err}, qapi.l)
 		default:
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: err}, qapi.l)
 		}
 		return
 	}
-	writeQueryResponse(w, res)
+	writeQueryResponse(w, res, qapi.l)
 }
 
 func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
@@ -547,28 +569,28 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 	span := tracing.SpanFromContext(ctx)
 
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)}, qapi.l)
 		return
 	}
 
 	start, err := parseTimeParam(r, "start", time.Now())
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)}, qapi.l)
 		return
 	}
 	end, err := parseTimeParam(r, "end", time.Now())
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)}, qapi.l)
 		return
 	}
 	limit, err := parseLimitParam(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)}, qapi.l)
 		return
 	}
 	ms, err := parseMatchersParamForSeries(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)}, qapi.l)
 		return
 	}
 
@@ -583,10 +605,10 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)}, qapi.l)
 		return
 	}
 	defer errcapture.Do(&err, q.Close, "query close")
@@ -620,14 +642,14 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := set.Err(); err != nil {
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to merge series: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to merge series: %s", err)}, qapi.l)
 		return
 	}
 
-	writeSeriesResponse(w, series, annos)
+	writeSeriesResponse(w, series, annos, qapi.l)
 }
 
 func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
@@ -635,34 +657,34 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 	span := tracing.SpanFromContext(ctx)
 
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)}, qapi.l)
 		return
 	}
 
 	name := route.Param(ctx, "name")
 	if !model.LabelNameRE.MatchString(name) {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("invalid label name: %q", name)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("invalid label name: %q", name)}, qapi.l)
 	}
 
 	// TODO(GiedriusS): add support for default time range.
 	start, err := parseTimeParam(r, "start", v1.MinTime)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)}, qapi.l)
 		return
 	}
 	end, err := parseTimeParam(r, "end", v1.MaxTime)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)}, qapi.l)
 		return
 	}
 	limit, err := parseLimitParam(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)}, qapi.l)
 		return
 	}
 	ms, err := parseMatchersParamForLabels(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)}, qapi.l)
 		return
 	}
 
@@ -678,13 +700,13 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)}, qapi.l)
 		return
 	}
-	defer q.Close()
+	defer slogerrcapture.Do(qapi.l, q.Close, "query close")
 
 	hints := &storage.LabelHints{
 		Limit: limit,
@@ -698,10 +720,10 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 			labelValues, lvannos, err := q.LabelValues(ctx, name, hints, mset...)
 			if err != nil {
 				if limits.IsResourceExhausted(err) {
-					writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+					writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 					return
 				}
-				writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label values: %w", err)})
+				writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label values: %w", err)}, qapi.l)
 				return
 			}
 			annos = annos.Merge(lvannos)
@@ -711,10 +733,10 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 		labelValues, lvannos, err := q.LabelValues(ctx, name, hints)
 		if err != nil {
 			if limits.IsResourceExhausted(err) {
-				writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+				writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 				return
 			}
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label values: %w", err)})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label values: %w", err)}, qapi.l)
 			return
 		}
 		annos = annos.Merge(lvannos)
@@ -727,7 +749,7 @@ func (qapi *queryAPI) labelValues(w http.ResponseWriter, r *http.Request) {
 		annos = annos.Add(warnings.ErrorTruncatedResponse)
 	}
 
-	writeLabelsResponse(w, res, annos)
+	writeLabelsResponse(w, res, annos, qapi.l)
 }
 
 func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
@@ -735,28 +757,28 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 	span := tracing.SpanFromContext(ctx)
 
 	if err := r.ParseForm(); err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to parse form data: %s", err)}, qapi.l)
 		return
 	}
 
 	start, err := parseTimeParam(r, "start", v1.MinTime)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get start: %s", err)}, qapi.l)
 		return
 	}
 	end, err := parseTimeParam(r, "end", v1.MaxTime)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get end: %s", err)}, qapi.l)
 		return
 	}
 	limit, err := parseLimitParam(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get limit: %s", err)}, qapi.l)
 		return
 	}
 	ms, err := parseMatchersParamForLabels(r)
 	if err != nil {
-		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errBadRequest, Err: fmt.Errorf("unable to get label matchers: %s", err)}, qapi.l)
 		return
 	}
 
@@ -771,13 +793,13 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 	q, err := qapi.queryable().Querier(timestamp.FromTime(start), timestamp.FromTime(end))
 	if err != nil {
 		if limits.IsResourceExhausted(err) {
-			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+			writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 			return
 		}
-		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)})
+		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to create querier: %s", err)}, qapi.l)
 		return
 	}
-	defer q.Close()
+	defer slogerrcapture.Do(qapi.l, q.Close, "query close")
 
 	hints := &storage.LabelHints{
 		Limit: limit,
@@ -791,10 +813,10 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 			labelNames, lnannos, err := q.LabelNames(ctx, hints, mset...)
 			if err != nil {
 				if limits.IsResourceExhausted(err) {
-					writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+					writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 					return
 				}
-				writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label names: %w", err)})
+				writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label names: %w", err)}, qapi.l)
 				return
 			}
 			annos = annos.Merge(lnannos)
@@ -804,10 +826,10 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 		labelNames, lnannos, err := q.LabelNames(ctx, hints)
 		if err != nil {
 			if limits.IsResourceExhausted(err) {
-				writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err})
+				writeErrorResponse(w, errorResponse{Typ: errResourceExhausted, Err: err}, qapi.l)
 				return
 			}
-			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label names: %w", err)})
+			writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to query label names: %w", err)}, qapi.l)
 			return
 		}
 		annos = annos.Merge(lnannos)
@@ -820,5 +842,5 @@ func (qapi *queryAPI) labelNames(w http.ResponseWriter, r *http.Request) {
 		annos = annos.Add(warnings.ErrorTruncatedResponse)
 	}
 
-	writeLabelsResponse(w, res, annos)
+	writeLabelsResponse(w, res, annos, qapi.l)
 }

@@ -37,11 +37,6 @@ type indexRowReader struct {
 	labelHashColumn  int
 }
 
-type indexReaderOpts struct {
-	sortLabels  []string
-	concurrency int
-}
-
 var _ parquet.RowReader = &indexRowReader{}
 
 func columnIDForKnownColumn(schema *parquet.Schema, columnName string) int {

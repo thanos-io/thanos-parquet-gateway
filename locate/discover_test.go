@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/util/teststorage"
+	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
@@ -192,7 +193,7 @@ func TestTSDBDiscoverer(t *testing.T) {
 		}
 
 		// delete the block
-		if err := bkt.Delete(ctx, meta.BlockMeta.ULID.String()); err != nil {
+		if err := bkt.Delete(ctx, meta.ULID.String()); err != nil {
 			tt.Fatalf("unable to delete block: %s", err)
 		}
 		if err := discoverer.Discover(ctx); err != nil {
@@ -212,7 +213,8 @@ func createBlockForDay(ctx context.Context, t *testing.T, bkt objstore.Bucket, d
 	t.Cleanup(func() { _ = st.Close() })
 
 	app := st.Appender(ctx)
-	app.Append(0, labels.FromStrings("foo", "bar"), d.MinT(), 1)
+	_, err := app.Append(0, labels.FromStrings("foo", "bar"), d.MinT(), 1)
+	require.NoError(t, err)
 	if err := app.Commit(); err != nil {
 		return fmt.Errorf("unable to commit samples: %s", err)
 	}

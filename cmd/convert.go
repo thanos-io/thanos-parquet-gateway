@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +27,7 @@ import (
 	"gopkg.in/alecthomas/kingpin.v2"
 
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 )
 
@@ -335,19 +335,6 @@ func cleanupDirectory(dir string) error {
 	return nil
 }
 
-func overlappingBlocks(blocks []convert.Convertible, date time.Time) []convert.Convertible {
-	res := make([]convert.Convertible, 0)
-	for _, m := range blocks {
-		if date.AddDate(0, 0, 1).UnixMilli() >= m.Meta().MinTime && date.UnixMilli() <= m.Meta().MaxTime {
-			res = append(res, m)
-		}
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].Meta().MaxTime <= res[j].Meta().MaxTime
-	})
-	return res
-}
-
 func ulidsFromMetas(metas []metadata.Meta) []string {
 	res := make([]string, len(metas))
 	for i := range metas {
@@ -378,7 +365,7 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 			log.Debug("block download start", "ulid", src)
 
 			if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
-				return downloadBlock(ctx, bkt, m, blkDir, opts)
+				return downloadBlock(ctx, bkt, m, blkDir, opts, log)
 			}); err != nil {
 				return fmt.Errorf("unable to download block %q: %w", src, err)
 			}
@@ -401,7 +388,7 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 	return res, nil
 }
 
-func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts) error {
+func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts, l *slog.Logger) error {
 	src := meta.ULID.String()
 	dst := filepath.Join(blkDir, src)
 
@@ -447,7 +434,7 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 			if err != nil {
 				return fmt.Errorf("unable to get file %q: %w", name, err)
 			}
-			defer rc.Close()
+			defer slogerrcapture.Do(l, rc.Close, "closing %s", name)
 
 			f, err := os.Create(dst)
 			if err != nil {

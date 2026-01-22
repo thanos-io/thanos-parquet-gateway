@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/prometheus/prometheus/util/testutil"
+	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 
@@ -116,7 +117,7 @@ func TestSelect(t *testing.T) {
     jkl{ext="doesntmatter1"} 1
     jkl{ext="doesntmatter2"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
 	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
@@ -182,7 +183,7 @@ func TestLabelNames(t *testing.T) {
     foo{bar="baz"} 1
     abc{def="ghi"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
 	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
@@ -229,7 +230,7 @@ func TestLabelValues(t *testing.T) {
     foo{bar="baz"} 1
     abc{ext="internal"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
 	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
@@ -308,7 +309,7 @@ func TestLabelValues(t *testing.T) {
 func TestInstantQuery(t *testing.T) {
 	defaultQueryTime := time.Unix(50, 0)
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	cases := []struct {
 		load      string
@@ -1063,7 +1064,7 @@ func TestInstantQuery(t *testing.T) {
 
 			t.Parallel()
 			testStorage := promqltest.LoadedStorage(t, tc.load)
-			t.Cleanup(func() { testStorage.Close() })
+			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
 			database := storageToDB(t, testStorage)
 			ctx := context.Background()
@@ -1099,7 +1100,7 @@ func TestInstantQuery(t *testing.T) {
 
 func TestRangeQuery(t *testing.T) {
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	type rangeQuery struct {
 		query      string
@@ -1269,7 +1270,7 @@ func TestRangeQuery(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			testStorage := promqltest.LoadedStorage(t, tc.load)
-			t.Cleanup(func() { testStorage.Close() })
+			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
 			db := storageToDB(t, testStorage)
 			ctx := t.Context()
@@ -1304,21 +1305,23 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 
 	ctx := context.Background()
 	st := teststorage.New(t)
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
 
 	bkt, err := filesystem.NewBucket(t.TempDir())
 	if err != nil {
 		t.Fatalf("unable to create bucket: %s", err)
 	}
-	t.Cleanup(func() { bkt.Close() })
+	t.Cleanup(func() { require.NoError(t, bkt.Close()) })
 
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	app := st.Appender(ctx)
 	for i := range 100 {
-		app.Append(0, labels.FromStrings("__name__", "foo", "replica", "1", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
-		app.Append(0, labels.FromStrings("__name__", "foo", "replica", "2", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		_, err := app.Append(0, labels.FromStrings("__name__", "foo", "replica", "1", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		require.NoError(t, err)
+		_, err = app.Append(0, labels.FromStrings("__name__", "foo", "replica", "2", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		require.NoError(t, err)
 	}
 	if err := app.Commit(); err != nil {
 		t.Fatalf("unable to commit: %s", err)
@@ -1352,7 +1355,7 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore.Bucket, opts ...db.DBOption) *db.DB {
 	ctx := context.Background()
 
-	h := st.DB.Head()
+	h := st.Head()
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
