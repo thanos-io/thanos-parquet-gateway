@@ -34,6 +34,7 @@ func TestPlanner(t *testing.T) {
 		name string
 
 		notAfter     time.Time
+		notBefore    time.Time
 		maxDays      int
 		tsdbMetas    map[string]metadata.Meta
 		parquetMetas map[string]schema.Meta
@@ -510,9 +511,69 @@ func TestPlanner(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:      "we dont convert blocks that are too old",
+			notAfter:  time.UnixMilli(math.MaxInt64),
+			notBefore: time.Date(2020, time.January, 6, 0, 0, 0, 0, time.UTC),
+			maxDays:   7,
+			tsdbMetas: map[string]metadata.Meta{
+				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+						MinTime: time.Date(2020, time.January, 4, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2020, time.January, 8, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+			},
+			parquetMetas: map[string]schema.Meta{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:    util.NewDate(2020, time.January, 7),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					},
+					{
+						Date:    util.NewDate(2020, time.January, 6),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					},
+				},
+			},
+		},
+		{
+			name:      "block spanning old and new dates only converts new dates",
+			notAfter:  time.Date(2026, time.January, 8, 0, 0, 0, 0, time.UTC),
+			notBefore: time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC), // max-days-back=7 from 1/8/2026
+			maxDays:   10,
+			tsdbMetas: map[string]metadata.Meta{
+				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+						MinTime: time.Date(2025, time.December, 25, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2026, time.January, 4, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+			},
+			parquetMetas: map[string]schema.Meta{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:    util.NewDate(2026, time.January, 3),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					},
+					{
+						Date:    util.NewDate(2026, time.January, 2),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					},
+					{
+						Date:    util.NewDate(2026, time.January, 1),
+						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					},
+				},
+			},
+		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas)
+			plan := NewPlanner(tc.notAfter, tc.notBefore, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
