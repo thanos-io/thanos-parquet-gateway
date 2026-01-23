@@ -21,7 +21,7 @@ Once built, you can run the server using something like:
 
 ```bash
 parquet-gateway serve \
-    --storage.prefix my-prefix \
+    --parquet.objstore-config-file=minio_store_config.yaml \
     --http.internal.port=6060 \
     --http.prometheus.port=9090 \
     --http.thanos.port=9091 \
@@ -35,7 +35,7 @@ parquet-gateway serve \
 
 This will:
 
-- load blocks from the `.data/my-prefix` directory
+- load blocks from the bucket defined in configuration file `--parquet.objstore-config-file`
 - expose internal metrics and readiness handlers on port 6060
 - expose a subset of the Prometheus HTTP API on port 9090
 - expose an Thanos Info, Series and Query gRPC service on port 9091
@@ -67,12 +67,12 @@ curl 'http://0.0.0.0:9000/api/v1/query' \
 
 ### Converter
 
-To convert TSDB blocks in the `.data/source` directory that overlap `09/2021` and write the resulting parquet files into the `.data/destination` directory.
+To convert TSDB blocks from bucket defined in `--tsdb.objstore-config-file` and write the resulting parquet files into the bucket defined in `--parquet.objstore-config-file`
 
 ```bash
 parquet-gateway convert \
-    --tsdb.storage.prefix source \
-    --parquet.storage.prefix destination \
+    --tsdb.objstore-config-file=minio_converter_source.yaml \
+    --parquet.objstore-config-file=minio_converter_destination.yaml \
     --convert.sorting.label=__name__ \
     --convert.sorting.label=namespace
 ```
