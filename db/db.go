@@ -185,7 +185,6 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 type DBQueryable struct {
 	blocks []*Block
 
-	// extLabels are added to all series in the result set overriding any internal labels.
 	extLabels labels.Labels
 
 	// replicaLabelNames are names of labels that identify replicas, they are dropped

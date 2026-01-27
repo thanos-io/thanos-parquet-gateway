@@ -34,6 +34,7 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
+	"github.com/thanos-io/thanos-parquet-gateway/proto/streampb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
@@ -152,10 +153,27 @@ func WriteConcurrency(c int) ConvertOption {
 	}
 }
 
+func WriteStreamFile(
+	ctx context.Context,
+	bkt objstore.Bucket,
+	extLabels schema.ExternalLabels,
+) error {
+	var descriptor = streampb.StreamDescriptor{
+		ExternalLabels: extLabels,
+	}
+
+	data, err := proto.Marshal(&descriptor)
+	if err != nil {
+		return err
+	}
+	return bkt.Upload(ctx, schema.StreamDescriptorFileNameForBlock(extLabels.Hash()), bytes.NewReader(data))
+}
+
 func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
 	day util.Date,
+	extLabelsHash schema.ExternalLabelsHash,
 	blks []Convertible,
 	opts ...ConvertOption,
 ) (rerr error) {
@@ -175,7 +193,6 @@ func ConvertTSDBBlock(
 		opts[i](cfg)
 	}
 	start, end := day.MinT(), day.MaxT()
-	name := schema.BlockNameForDay(day)
 
 	shardedRowReaders, err := shardedIndexRowReader(ctx, start, end, blks, *cfg)
 	if err != nil {
@@ -191,10 +208,9 @@ func ConvertTSDBBlock(
 	for shard, rr := range shardedRowReaders {
 		errGroup.Go(func() error {
 			converter := newConverter(
-				name,
-				start,
-				end,
+				day,
 				shard,
+				extLabelsHash,
 				rr,
 				bkt,
 				cfg.rowGroupSize,
@@ -219,7 +235,7 @@ func ConvertTSDBBlock(
 		return fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
-	if err := writeMetaFile(ctx, start, end, name, int64(len(shardedRowReaders)), bkt); err != nil {
+	if err := writeMetaFile(ctx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt); err != nil {
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
@@ -242,11 +258,11 @@ type blockSeries struct {
 	labels    labels.Labels
 }
 
-func writeMetaFile(ctx context.Context, start int64, end int64, name string, numShards int64, bkt objstore.Bucket) error {
+func writeMetaFile(ctx context.Context, day util.Date, extLabelsHash schema.ExternalLabelsHash, numShards int64, bkt objstore.Bucket) error {
 	meta := &metapb.Metadata{
 		Version: schema.V2,
-		Mint:    start,
-		Maxt:    end,
+		Mint:    day.MinT(),
+		Maxt:    day.MaxT(),
 		Shards:  numShards,
 	}
 
@@ -254,7 +270,7 @@ func writeMetaFile(ctx context.Context, start int64, end int64, name string, num
 	if err != nil {
 		return fmt.Errorf("unable to marshal meta bytes: %w", err)
 	}
-	if err := bkt.Upload(ctx, schema.MetaFileNameForBlock(name), bytes.NewReader(metaBytes)); err != nil {
+	if err := bkt.Upload(ctx, schema.MetaFileNameForBlock(day, extLabelsHash), bytes.NewReader(metaBytes)); err != nil {
 		return fmt.Errorf("unable to upload meta file: %w", err)
 	}
 
@@ -507,14 +523,15 @@ func compareBySortedLabelsFunc(sortedLabels []string) func(a, b labels.Labels) i
 }
 
 type converter struct {
-	name       string
+	date       util.Date
 	mint, maxt int64
 
 	shard        int
 	rowGroupSize int
 	numRowGroups int
 
-	bkt objstore.Bucket
+	bkt           objstore.Bucket
+	extLabelsHash schema.ExternalLabelsHash
 
 	rr *indexRowReader
 
@@ -528,10 +545,9 @@ type converter struct {
 }
 
 func newConverter(
-	name string,
-	mint int64,
-	maxt int64,
+	date util.Date,
 	shard int,
+	extLabelsHash schema.ExternalLabelsHash,
 	rr *indexRowReader,
 	bkt objstore.Bucket,
 	rowGroupSize int,
@@ -545,10 +561,11 @@ func newConverter(
 
 ) *converter {
 	return &converter{
-		name:  name,
-		mint:  mint,
-		maxt:  maxt,
-		shard: shard,
+		date:          date,
+		mint:          date.MinT(),
+		maxt:          date.MaxT(),
+		shard:         shard,
+		extLabelsHash: extLabelsHash,
 
 		bkt: bkt,
 		rr:  rr,
@@ -599,11 +616,11 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	s := c.rr.Schema()
 
 	w, err := newSplitFileWriter(ctx, c.bkt, s, map[string]writerConfig{
-		schema.LabelsPfileNameForShard(c.name, c.shard): {
+		schema.LabelsPfileNameForShard(c.extLabelsHash, c.date, c.shard): {
 			s:    schema.WithCompression(schema.LabelsProjection(s)),
 			opts: c.labelWriterOptions(),
 		},
-		schema.ChunksPfileNameForShard(c.name, c.shard): {
+		schema.ChunksPfileNameForShard(c.extLabelsHash, c.date, c.shard): {
 			s:    schema.WithCompression(schema.ChunkProjection(s)),
 			opts: c.chunkWriterOptions(),
 		},

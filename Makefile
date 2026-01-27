@@ -91,7 +91,11 @@ parquet-gateway: $(shell find . -type f -name '*.go')
 	@echo ">> building binaries..."
 	@$(GO) build $(GO_BUILD_ARGS) -o parquet-gateway github.com/thanos-io/thanos-parquet-gateway/cmd
 
-protos: proto/metapb/meta.pb.go
+protos: proto/metapb/meta.pb.go proto/streampb/stream.pb.go
+
+proto/streampb/stream.pb.go: proto/streampb/stream.proto
+	@echo ">> compiling protos..."
+	@$(PROTOC) -I=proto/streampb/ --go_out=paths=source_relative:./proto/streampb/ proto/streampb/stream.proto
 
 proto/metapb/meta.pb.go: proto/metapb/meta.proto
 	@echo ">> compiling protos..."

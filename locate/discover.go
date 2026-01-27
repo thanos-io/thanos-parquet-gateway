@@ -20,12 +20,15 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/sourcegraph/conc/pool"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/compact/downsample"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
+	"github.com/thanos-io/thanos-parquet-gateway/proto/streampb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
@@ -51,8 +54,8 @@ func Logger(l *slog.Logger) DiscoveryOption {
 type Discoverer struct {
 	bkt objstore.Bucket
 
-	mu    sync.Mutex
-	metas map[string]schema.Meta
+	mu     sync.Mutex
+	blocks map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 
 	concurrency int
 
@@ -69,114 +72,186 @@ func NewDiscoverer(bkt objstore.Bucket, opts ...DiscoveryOption) *Discoverer {
 	}
 	return &Discoverer{
 		bkt:         bkt,
-		metas:       make(map[string]schema.Meta),
+		blocks:      make(map[schema.ExternalLabelsHash]schema.ParquetBlocksStream),
 		concurrency: cfg.concurrency,
 		l:           cfg.l,
 	}
 }
 
-func (s *Discoverer) Metas() map[string]schema.Meta {
+func (s *Discoverer) Streams() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res := make(map[string]schema.Meta, len(s.metas))
-	maps.Copy(res, s.metas)
+	res := make(map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, len(s.blocks))
+
+	for k := range s.blocks {
+		res[k] = s.blocks[k]
+	}
 
 	return res
 }
 
 func (s *Discoverer) Discover(ctx context.Context) error {
-	m := make(map[string][]string)
+	type futureBlocksStream struct {
+		schema.ParquetBlocksStream
+
+		streamFile  string
+		filesByDate map[util.Date][]string
+	}
+
+	futureBlocks := make(map[schema.ExternalLabelsHash]futureBlocksStream)
+	fbMtx := sync.Mutex{}
+
 	err := s.bkt.Iter(ctx, "", func(n string) error {
-		id, file, ok := schema.SplitBlockPath(n)
-		if !ok {
+		if eh, ok := schema.SplitStreamPath(n); ok {
+			fbs, ok := futureBlocks[eh]
+			if !ok {
+				fbs = futureBlocksStream{}
+			}
+
+			if fbs.streamFile != "" {
+				panic("BUG: discovered stream file twice")
+			}
+			fbs.streamFile = n
+			futureBlocks[eh] = fbs
+
 			return nil
 		}
-		m[id] = append(m[id], file)
+
+		if date, file, eh, ok := schema.SplitBlockPath(n); ok {
+			fbs, ok := futureBlocks[eh]
+			if !ok {
+				fbs = futureBlocksStream{}
+			}
+
+			if fbs.DiscoveredDays == nil {
+				fbs.DiscoveredDays = make(map[util.Date]struct{})
+			}
+
+			if file == schema.MetaFile {
+				fbs.DiscoveredDays[date] = struct{}{}
+			}
+
+			if fbs.filesByDate == nil {
+				fbs.filesByDate = make(map[util.Date][]string)
+			}
+
+			fbs.filesByDate[date] = append(fbs.filesByDate[date], file)
+
+			futureBlocks[eh] = fbs
+		}
+
 		return nil
 	}, objstore.WithRecursiveIter())
 	if err != nil {
 		return err
 	}
 
-	type metaOrError struct {
-		m   schema.Meta
-		err error
-	}
+	p := pool.New().WithContext(ctx).WithCancelOnError().WithFirstError().WithMaxGoroutines(s.concurrency)
 
-	metaC := make(chan metaOrError)
-	go func() {
-		defer close(metaC)
-
-		workerC := make(chan string, s.concurrency)
-		go func() {
-			defer close(workerC)
-
-			for k, v := range m {
-				if !slices.Contains(v, schema.MetaFile) {
-					// skip incomplete block
-					continue
-				}
-				if _, ok := s.metas[k]; ok {
-					// we already got the block
-					continue
-				}
-				workerC <- k
+	for discoveredHash := range futureBlocks {
+		// NOTE(GiedriusS): can be without a stream file if it was previously uploaded
+		// with no external labels.
+		if futureBlocks[discoveredHash].streamFile == "" {
+			if discoveredHash != 0 {
+				delete(futureBlocks, discoveredHash)
 			}
-		}()
-
-		var wg sync.WaitGroup
-		defer wg.Wait()
-
-		for range s.concurrency {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				for k := range workerC {
-					meta, err := readMetaFile(ctx, s.bkt, k, s.l)
-					if err != nil {
-						metaC <- metaOrError{err: fmt.Errorf("unable to read meta file for %q: %w", k, err)}
-					} else {
-						metaC <- metaOrError{m: meta}
-					}
-				}
-			}()
-		}
-	}()
-
-	am := make(map[string]struct{})
-	for k, v := range m {
-		if !slices.Contains(v, schema.MetaFile) {
-			// skip incomplete block
 			continue
 		}
-		am[k] = struct{}{}
 	}
 
-	nm := make(map[string]schema.Meta)
-	for m := range metaC {
-		if m.err != nil {
-			return fmt.Errorf("unable to read meta: %w", m.err)
+	downloadedDescriptors := make(map[schema.ExternalLabelsHash]schema.StreamDescriptor, len(futureBlocks))
+
+	for discoveredHash := range futureBlocks {
+		if discoveredHash == 0 {
+			continue
 		}
-		nm[m.m.Name] = m.m
+		p.Go(func(ctx context.Context) error {
+			sd, err := readStreamDescriptorFile(ctx, s.bkt, discoveredHash, s.l)
+			if err != nil {
+				return fmt.Errorf("unable to read stream descriptor for hash %q: %w", discoveredHash.String(), err)
+			}
+
+			fbMtx.Lock()
+			defer fbMtx.Unlock()
+
+			downloadedDescriptors[discoveredHash] = sd
+
+			return nil
+		})
+	}
+
+	if err := p.Wait(); err != nil {
+		return err
+	}
+
+	for discoveredHash := range downloadedDescriptors {
+		fbs := futureBlocks[discoveredHash]
+		fbs.StreamDescriptor = downloadedDescriptors[discoveredHash]
+		futureBlocks[discoveredHash] = fbs
+	}
+
+	p = pool.New().WithContext(ctx).WithCancelOnError().WithFirstError().WithMaxGoroutines(s.concurrency)
+
+	for discoveredHash := range futureBlocks {
+		for blockDate, dateFiles := range futureBlocks[discoveredHash].filesByDate {
+			if !slices.Contains(dateFiles, schema.MetaFile) {
+				delete(futureBlocks[discoveredHash].filesByDate, blockDate)
+			} else {
+				futureBlocks[discoveredHash].DiscoveredDays[blockDate] = struct{}{}
+			}
+		}
+	}
+
+	downloadedMetas := make(map[schema.ExternalLabelsHash][]schema.Meta, len(futureBlocks))
+	for discoveredHash := range futureBlocks {
+		for blockDate := range futureBlocks[discoveredHash].filesByDate {
+			p.Go(func(ctx context.Context) error {
+				meta, err := readMetaFile(ctx, s.bkt, blockDate, discoveredHash, s.l)
+				if err != nil {
+					return fmt.Errorf("unable to read meta file for block date %q hash %q: %w", blockDate, discoveredHash.String(), err)
+				}
+
+				fbMtx.Lock()
+				defer fbMtx.Unlock()
+
+				downloadedMetas[discoveredHash] = append(downloadedMetas[discoveredHash], meta)
+
+				return nil
+			})
+		}
+	}
+
+	if err := p.Wait(); err != nil {
+		return err
+	}
+
+	for discoveredHash := range downloadedMetas {
+		fbs := futureBlocks[discoveredHash]
+		fbs.Metas = downloadedMetas[discoveredHash]
+		futureBlocks[discoveredHash] = fbs
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	maps.Copy(s.metas, nm)
+	for fbHash := range futureBlocks {
+		s.blocks[fbHash] = futureBlocks[fbHash].ParquetBlocksStream
+	}
 
-	// delete metas that are no longer in the bucket
-	maps.DeleteFunc(s.metas, func(k string, _ schema.Meta) bool {
-		_, ok := am[k]
-		return !ok
-	})
+	for fbHash := range s.blocks {
+		if _, ok := futureBlocks[fbHash]; !ok {
+			delete(s.blocks, fbHash)
+		}
+	}
 
-	if len(s.metas) != 0 {
+	if len(s.blocks) != 0 {
 		mint, maxt := int64(math.MaxInt64), int64(math.MinInt64)
-		for _, v := range s.metas {
-			mint = min(mint, v.Mint)
-			maxt = max(maxt, v.Mint)
+		for _, bs := range s.blocks {
+			for _, m := range bs.Metas {
+				mint = min(mint, m.Mint)
+				maxt = max(maxt, m.Maxt)
+			}
 		}
 		syncMinTime.WithLabelValues(whatDiscoverer).Set(float64(mint))
 		syncMaxTime.WithLabelValues(whatDiscoverer).Set(float64(maxt))
@@ -186,8 +261,43 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 	return nil
 }
 
-func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string, l *slog.Logger) (schema.Meta, error) {
-	mfile := schema.MetaFileNameForBlock(name)
+func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
+	sdfile := schema.StreamDescriptorFileNameForBlock(extLabelsHash)
+	if _, err := bkt.Attributes(ctx, sdfile); err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to attr %s: %w", sdfile, err)
+	}
+	rdr, err := bkt.Get(ctx, sdfile)
+	if err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to get %s: %w", sdfile, err)
+	}
+	defer slogerrcapture.Do(l, rdr.Close, "closing stream descriptor file reader %s", sdfile)
+
+	metaBytes, err := io.ReadAll(rdr)
+	if err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
+	}
+
+	metapb := &streampb.StreamDescriptor{}
+	if err := proto.Unmarshal(metaBytes, metapb); err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
+	}
+
+	if len(metapb.GetExternalLabels()) == 0 {
+		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has no external labels", sdfile)
+	}
+
+	extLbls := schema.ExternalLabels(metapb.GetExternalLabels())
+	if extLbls.Hash() != extLabelsHash {
+		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has invalid external labels hash: got %d, want %d", sdfile, extLbls.Hash(), extLabelsHash)
+	}
+
+	return schema.StreamDescriptor{
+		ExternalLabels: metapb.GetExternalLabels(),
+	}, nil
+}
+
+func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.Meta, error) {
+	mfile := schema.MetaFileNameForBlock(date, extLabelsHash)
 	if _, err := bkt.Attributes(ctx, mfile); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
 	}
@@ -214,7 +324,7 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, name string, l *slog
 	}
 	return schema.Meta{
 		Version:        int(metapb.GetVersion()),
-		Name:           name,
+		Date:           date,
 		Mint:           metapb.GetMint(),
 		Maxt:           metapb.GetMaxt(),
 		Shards:         metapb.GetShards(),
@@ -287,14 +397,36 @@ func NewTSDBDiscoverer(bkt objstore.Bucket, opts ...TSDBDiscoveryOption) *TSDBDi
 	}
 }
 
-func (s *TSDBDiscoverer) Metas() map[string]metadata.Meta {
+type TSDBStream struct {
+}
+
+func (s *TSDBDiscoverer) Streams() map[schema.ExternalLabelsHash]schema.TSDBBlocksStream {
+	out := make(map[schema.ExternalLabelsHash]schema.TSDBBlocksStream)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	res := make(map[string]metadata.Meta, len(s.metas))
-	maps.Copy(res, s.metas)
+	for _, m := range s.metas {
+		extLbls := schema.ExternalLabels(m.Thanos.Labels)
+		eh := extLbls.Hash()
 
-	return res
+		bs, ok := out[eh]
+		if !ok {
+			bs = schema.TSDBBlocksStream{
+				StreamDescriptor: schema.StreamDescriptor{
+					ExternalLabels: m.Thanos.Labels,
+				},
+				DiscoveredDays: make(map[util.Date]struct{}),
+			}
+		}
+		bs.Metas = append(bs.Metas, m)
+		for _, d := range util.SplitIntoDates(m.MinTime, m.MaxTime) {
+			bs.DiscoveredDays[d] = struct{}{}
+		}
+		out[eh] = bs
+	}
+
+	return out
 }
 
 func (s *TSDBDiscoverer) Discover(ctx context.Context) error {

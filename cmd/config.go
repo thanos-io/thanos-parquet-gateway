@@ -328,7 +328,7 @@ func setupSyncer(ctx context.Context, g *run.Group, log *slog.Logger, bkt objsto
 
 	iterCtx, iterCancel := context.WithTimeout(ctx, opts.syncerInterval)
 	defer iterCancel()
-	if err := syncer.Sync(iterCtx, discoverer.Metas()); err != nil {
+	if err := syncer.Sync(iterCtx, discoverer.Streams()); err != nil {
 		return nil, fmt.Errorf("unable to run initial sync: %w", err)
 	}
 
@@ -339,7 +339,7 @@ func setupSyncer(ctx context.Context, g *run.Group, log *slog.Logger, bkt objsto
 
 			iterCtx, iterCancel := context.WithTimeout(ctx, opts.syncerInterval)
 			defer iterCancel()
-			if err := syncer.Sync(iterCtx, discoverer.Metas()); err != nil {
+			if err := syncer.Sync(iterCtx, discoverer.Streams()); err != nil {
 				log.Warn("Unable to sync new blocks", slog.Any("err", err))
 			}
 			return nil

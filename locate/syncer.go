@@ -10,11 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"sync"
 
@@ -25,6 +23,7 @@ import (
 	"github.com/thanos-io/objstore"
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
@@ -36,7 +35,7 @@ type Syncer struct {
 	concurrency int
 
 	mu     sync.Mutex
-	blocks map[string]*db.Block
+	blocks map[schema.ExternalLabelsHash]map[util.Date]*db.Block
 
 	cached []*db.Block
 }
@@ -98,7 +97,7 @@ func NewSyncer(bkt objstore.Bucket, opts ...SyncerOption) *Syncer {
 
 	return &Syncer{
 		bkt:         bkt,
-		blocks:      make(map[string]*db.Block),
+		blocks:      make(map[schema.ExternalLabelsHash]map[util.Date]*db.Block),
 		blockOpts:   cfg.blockOpts,
 		metaFilter:  cfg.metaFilter,
 		concurrency: cfg.concurrency,
@@ -112,25 +111,40 @@ func (s *Syncer) Blocks() []*db.Block {
 	return s.filterBlocks(s.cached)
 }
 
-func (s *Syncer) Sync(ctx context.Context, metas map[string]schema.Meta) error {
+func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) error {
 	type blockOrError struct {
-		blk *db.Block
-		err error
+		blk       *db.Block
+		extLabels schema.ExternalLabels
+		err       error
+	}
+
+	type metaHashTuple struct {
+		streamHash schema.ExternalLabelsHash
+		m          schema.Meta
+		extLabels  schema.ExternalLabels
 	}
 
 	blkC := make(chan blockOrError)
 	go func() {
 		defer close(blkC)
 
-		workerC := make(chan schema.Meta, s.concurrency)
+		workerC := make(chan metaHashTuple, s.concurrency)
 		go func() {
 			defer close(workerC)
 
-			for k, v := range s.filterMetas(metas) {
-				if _, ok := s.blocks[k]; ok {
-					continue
+			for streamHash, stream := range parquetStreams {
+				if _, ok := s.blocks[streamHash]; !ok {
+					s.blocks[streamHash] = make(map[util.Date]*db.Block)
 				}
-				workerC <- v
+				for _, m := range s.filterMetas(stream.Metas) {
+					if _, ok := s.blocks[streamHash][m.Date]; ok {
+						continue
+					}
+					workerC <- metaHashTuple{
+						m:         m,
+						extLabels: stream.ExternalLabels,
+					}
+				}
 			}
 		}()
 
@@ -141,36 +155,56 @@ func (s *Syncer) Sync(ctx context.Context, metas map[string]schema.Meta) error {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for m := range workerC {
-					blk, err := newBlockForMeta(ctx, s.bkt, m, s.blockOpts...)
+				for mh := range workerC {
+					blk, err := newBlockForMeta(ctx, s.bkt, mh.extLabels, mh.m, s.blockOpts...)
 					if err != nil {
-						blkC <- blockOrError{err: fmt.Errorf("unable to read block %q: %w", m.Name, err)}
+						blkC <- blockOrError{err: fmt.Errorf("unable to read block %s %q: %w", mh.streamHash.String(), mh.m.Date, err)}
 					} else {
-						blkC <- blockOrError{blk: blk}
+						blkC <- blockOrError{blk: blk, extLabels: mh.extLabels}
 					}
 				}
 			}()
 		}
 	}()
 
-	blocks := make(map[string]*db.Block, 0)
+	blocks := make(map[schema.ExternalLabelsHash]map[util.Date]*db.Block, 0)
 	for b := range blkC {
 		if b.err != nil {
 			return fmt.Errorf("unable to read block: %w", b.err)
 		}
-		blocks[b.blk.Meta().Name] = b.blk
+		if _, ok := blocks[b.extLabels.Hash()]; !ok {
+			blocks[b.extLabels.Hash()] = make(map[util.Date]*db.Block)
+		}
+		blocks[b.extLabels.Hash()][b.blk.Meta().Date] = b.blk
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// delete blocks that are not in meta map
-	maps.DeleteFunc(s.blocks, func(k string, _ *db.Block) bool { _, ok := metas[k]; return !ok })
+	var numBlocks int
+	for stream := range s.blocks {
+		if _, ok := parquetStreams[stream]; !ok {
+			delete(s.blocks, stream)
+		}
+	}
 
-	// add new blocks that we just loaded
-	maps.Copy(s.blocks, blocks)
+	for stream := range s.blocks {
+		if _, ok := blocks[stream]; !ok {
+			continue
+		}
+		s.blocks[stream] = blocks[stream]
+	}
+	for _, v := range s.blocks {
+		numBlocks += len(v)
+	}
+	allBlocks := make([]*db.Block, 0, numBlocks)
+	for _, m := range s.blocks {
+		for _, b := range m {
+			allBlocks = append(allBlocks, b)
+		}
+	}
 
-	s.cached = slices.Collect(maps.Values(s.blocks))
+	s.cached = allBlocks
 	sort.Slice(s.cached, func(i, j int) bool {
 		ls, _ := s.cached[i].Timerange()
 		rs, _ := s.cached[j].Timerange()
@@ -186,7 +220,7 @@ func (s *Syncer) Sync(ctx context.Context, metas map[string]schema.Meta) error {
 	return nil
 }
 
-func (s *Syncer) filterMetas(metas map[string]schema.Meta) map[string]schema.Meta {
+func (s *Syncer) filterMetas(metas []schema.Meta) []schema.Meta {
 	return s.metaFilter.filterMetas(metas)
 }
 
@@ -200,7 +234,7 @@ where shards live (s3, disk, memory) and should also do regular maintenance on i
 i.e. downloading files that it wants on disk, deleting files that are out of retention, etc.
 */
 
-func newBlockForMeta(ctx context.Context, bkt objstore.Bucket, m schema.Meta, opts ...BlockOption) (*db.Block, error) {
+func newBlockForMeta(ctx context.Context, bkt objstore.Bucket, extLabels schema.ExternalLabels, m schema.Meta, opts ...BlockOption) (*db.Block, error) {
 	cfg := blockConfig{
 		readBufferSize: 8 * units.MiB,
 		labelFilesDir:  os.TempDir(),
@@ -209,7 +243,7 @@ func newBlockForMeta(ctx context.Context, bkt objstore.Bucket, m schema.Meta, op
 		o(&cfg)
 	}
 
-	shards, err := readShards(ctx, bkt, m, cfg)
+	shards, err := readShards(ctx, bkt, m, extLabels, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read shards: %w", err)
 	}
@@ -217,12 +251,12 @@ func newBlockForMeta(ctx context.Context, bkt objstore.Bucket, m schema.Meta, op
 	return db.NewBlock(m, shards...), nil
 }
 
-func readShards(ctx context.Context, bkt objstore.Bucket, m schema.Meta, cfg blockConfig) ([]*db.Shard, error) {
+func readShards(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabels schema.ExternalLabels, cfg blockConfig) ([]*db.Shard, error) {
 	shards := make([]*db.Shard, 0, m.Shards)
-	for i := range int(m.Shards) {
-		shard, err := readShard(ctx, bkt, m, i, cfg)
+	for sh := range int(m.Shards) {
+		shard, err := readShard(ctx, bkt, m, extLabels, sh, cfg)
 		if err != nil {
-			return nil, fmt.Errorf("unable to read shard %d: %w", i, err)
+			return nil, fmt.Errorf("unable to read shard %d: %w", sh, err)
 		}
 		shards = append(shards, shard)
 	}
@@ -235,8 +269,8 @@ func bucketReaderFromContext(bkt objstore.Bucket, name string) func(context.Cont
 	}
 }
 
-func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, cfg blockConfig) (s *db.Shard, err error) {
-	chunkspfile := schema.ChunksPfileNameForShard(m.Name, i)
+func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabels schema.ExternalLabels, shard int, cfg blockConfig) (s *db.Shard, err error) {
+	chunkspfile := schema.ChunksPfileNameForShard(extLabels.Hash(), m.Date, shard)
 	attrs, err := bkt.Attributes(ctx, chunkspfile)
 	if err != nil {
 		return nil, fmt.Errorf("unable to attr chunks parquet file %q: %w", chunkspfile, err)
@@ -255,7 +289,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 		return nil, fmt.Errorf("unable to open chunks parquet file %q: %w", chunkspfile, err)
 	}
 
-	labelspfile := schema.LabelsPfileNameForShard(m.Name, i)
+	labelspfile := schema.LabelsPfileNameForShard(extLabels.Hash(), m.Date, shard)
 	labelspfilePath := filepath.Join(cfg.labelFilesDir, url.PathEscape(labelspfile))
 
 	// If we were not able to read the file for any reason we delete it and retry.
@@ -289,7 +323,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 			}
 			return nil, rerr
 		}
-		return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
+		return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx, extLabels), nil
 	}
 	rdr, err := bkt.Get(ctx, labelspfile)
 	if err != nil {
@@ -324,5 +358,5 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, i int, c
 		}
 		return nil, rerr
 	}
-	return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
+	return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx, extLabels), nil
 }

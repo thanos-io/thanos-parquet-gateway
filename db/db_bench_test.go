@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 	"go.uber.org/goleak"
 )
 
@@ -58,7 +59,7 @@ func BenchmarkSelect(b *testing.B) {
 
 	for k, qc := range map[string]queryableCreate{
 		"parquet": func(tb testing.TB, bkt objstore.Bucket, st *teststorage.TestStorage) storage.Queryable {
-			return storageToDBWithBkt(tb, st, bkt).Queryable()
+			return storageToDBWithBkt(tb, st, bkt, schema.ExternalLabels{}).Queryable()
 		},
 		"prometheus": func(_ testing.TB, _ objstore.Bucket, st *teststorage.TestStorage) storage.Queryable {
 			return st
