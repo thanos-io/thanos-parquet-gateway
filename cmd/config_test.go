@@ -18,6 +18,18 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m, goleak.IgnoreTopFunction("github.com/baidubce/bce-sdk-go/util/log.NewLogger.func1"))
 }
 
+func TestExpand(t *testing.T) {
+	t.Setenv("TEST_ENV_VAR", "test_value")
+
+	input := []byte("value: $(TEST_ENV_VAR)\nmissing: $(MISSING_ENV_VAR)\n")
+	expected := []byte("value: test_value\nmissing: \n")
+
+	output := ExpandEnvParens(input)
+	if string(output) != string(expected) {
+		t.Fatalf("expected %q, got %q", expected, output)
+	}
+}
+
 func TestSetupBucketWithConfigFile(t *testing.T) {
 	t.Run("filesystem config from file", func(tt *testing.T) {
 		tmpDir := tt.TempDir()

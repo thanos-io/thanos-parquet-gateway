@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"regexp"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -47,6 +48,18 @@ type bucketOpts struct {
 	objStoreConfig     string
 }
 
+var envPat = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+func ExpandEnvParens(b []byte) []byte {
+	return envPat.ReplaceAllFunc(b, func(m []byte) []byte {
+		sub := envPat.FindSubmatch(m)
+		if len(sub) != 2 {
+			return m
+		}
+		return []byte(os.Getenv(string(sub[1])))
+	})
+}
+
 func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 	var confContentYaml []byte
 	var err error
@@ -67,6 +80,8 @@ func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 	if len(confContentYaml) == 0 {
 		return nil, fmt.Errorf("objstore config is required")
 	}
+
+	confContentYaml = ExpandEnvParens(confContentYaml)
 
 	bkt, err := client.NewBucket(slogAdapter{log}, confContentYaml, "parquet-gateway", nil)
 	if err != nil {
