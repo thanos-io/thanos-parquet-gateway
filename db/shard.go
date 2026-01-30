@@ -25,10 +25,9 @@ import (
 )
 
 type Shard struct {
-	meta        schema.Meta
-	extLabels   labels.Labels
 	chunkspfile *parquet.File
 	labelspfile *parquet.File
+	meta        schema.Meta
 
 	chunkFileReaderFromCtx func(ctx context.Context) io.ReaderAt
 }
@@ -38,11 +37,9 @@ func NewShard(
 	chunkspfile *parquet.File,
 	labelspfile *parquet.File,
 	chunkFileReaderCtxFunc func(ctx context.Context) io.ReaderAt,
-	extLabels schema.ExternalLabels,
 ) *Shard {
 	return &Shard{
 		meta:                   meta,
-		extLabels:              labels.FromMap(extLabels),
 		chunkspfile:            chunkspfile,
 		labelspfile:            labelspfile,
 		chunkFileReaderFromCtx: chunkFileReaderCtxFunc,
@@ -50,7 +47,7 @@ func NewShard(
 }
 
 func (shd *Shard) Queryable(
-	overrideExtLabels labels.Labels,
+	extLabels labels.Labels,
 	replicaLabelNames []string,
 	selectChunkBytesQuota *limits.Quota,
 	selectRowCountQuota *limits.Quota,
@@ -61,12 +58,8 @@ func (shd *Shard) Queryable(
 	labelValuesRowCountQuota *limits.Quota,
 	labelNamesRowCountQuota *limits.Quota,
 ) *ShardQueryable {
-	extLbls := shd.extLabels
-	if overrideExtLabels.Len() > 0 {
-		extLbls = overrideExtLabels
-	}
 	return &ShardQueryable{
-		extlabels:                          extLbls,
+		extlabels:                          extLabels,
 		replicaLabelNames:                  replicaLabelNames,
 		selectChunkBytesQuota:              selectChunkBytesQuota,
 		selectRowCountQuota:                selectRowCountQuota,

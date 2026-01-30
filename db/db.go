@@ -29,8 +29,8 @@ import (
 // DB is a horizontal partitioning of multiple non-overlapping blocks that are
 // aligned to 24h and span exactly 24h.
 type DB struct {
-	syncer    syncer
-	extLabels labels.Labels
+	syncer            syncer
+	overrideExtLabels labels.Labels
 }
 
 type syncer interface {
@@ -54,7 +54,7 @@ func NewDB(syncer syncer, opts ...DBOption) *DB {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &DB{syncer: syncer, extLabels: cfg.extLabels}
+	return &DB{syncer: syncer, overrideExtLabels: cfg.extLabels}
 }
 
 func (db *DB) Timerange() (int64, int64) {
@@ -71,8 +71,37 @@ func (db *DB) Timerange() (int64, int64) {
 	return mint, maxt
 }
 
-func (db *DB) Extlabels() labels.Labels {
-	return db.extLabels
+type BlockInfo struct {
+	MinT, MaxT int64
+	Labels     schema.ExternalLabels
+}
+
+func (db *DB) BlockStreams() map[schema.ExternalLabelsHash]BlockInfo {
+	blocks := db.syncer.Blocks()
+
+	blockStreams := make(map[schema.ExternalLabelsHash]BlockInfo)
+	for _, blk := range blocks {
+		blkMint, blkMaxt := blk.Timerange()
+
+		st, ok := blockStreams[blk.ExternalLabels().Hash()]
+		if !ok {
+			st = BlockInfo{
+				MinT:   blkMint,
+				MaxT:   blkMaxt,
+				Labels: blk.ExternalLabels(),
+			}
+		} else {
+			st.MinT = min(st.MinT, blkMint)
+			st.MaxT = max(st.MaxT, blkMaxt)
+		}
+		blockStreams[blk.ExternalLabels().Hash()] = st
+	}
+
+	return blockStreams
+}
+
+func (db *DB) OverrideExtLabels() labels.Labels {
+	return db.overrideExtLabels
 }
 
 type queryableConfig struct {
@@ -169,7 +198,7 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 
 	return &DBQueryable{
 		blocks:                             db.syncer.Blocks(),
-		extLabels:                          db.extLabels,
+		extLabels:                          db.overrideExtLabels,
 		replicaLabelNames:                  cfg.replicaLabelsNames,
 		selectChunkBytesQuota:              cfg.selectChunkBytesQuota,
 		selectRowCountQuota:                cfg.selectRowCountQuota,
