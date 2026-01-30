@@ -25,8 +25,9 @@ import (
 )
 
 type Block struct {
-	meta   schema.Meta
-	shards []*Shard
+	meta      schema.Meta
+	shards    []*Shard
+	extLabels schema.ExternalLabels
 }
 
 func NewBlock(meta schema.Meta, shards ...*Shard) *Block {
@@ -42,7 +43,7 @@ func (blk *Block) Timerange() (int64, int64) {
 }
 
 func (blk *Block) Queryable(
-	extlabels labels.Labels,
+	overrideExtLabels labels.Labels,
 	replicaLabelNames []string,
 	selectChunkBytesQuota *limits.Quota,
 	selectRowCountQuota *limits.Quota,
@@ -56,7 +57,7 @@ func (blk *Block) Queryable(
 	qs := make([]*ShardQueryable, 0, len(blk.shards))
 	for _, shard := range blk.shards {
 		qs = append(qs, shard.Queryable(
-			extlabels,
+			overrideExtLabels,
 			replicaLabelNames,
 			selectChunkBytesQuota,
 			selectRowCountQuota,
@@ -68,11 +69,11 @@ func (blk *Block) Queryable(
 			labelNamesRowCountQuota,
 		))
 	}
-	return &BlockQueryable{extlabels: extlabels, shards: qs}
+	return &BlockQueryable{extLabels: blk.extLabels, shards: qs}
 }
 
 type BlockQueryable struct {
-	extlabels labels.Labels
+	extLabels schema.ExternalLabels
 
 	shards []*ShardQueryable
 }

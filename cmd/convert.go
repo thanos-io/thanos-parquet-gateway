@@ -197,10 +197,10 @@ func advanceConversion(
 		return fmt.Errorf("unable to clean up buffer directory: %w", err)
 	}
 
-	parquetMetas := parquetDiscoverer.Metas()
-	tsdbMetas := tsdbDiscoverer.Metas()
+	parquetStreams := parquetDiscoverer.Streams()
+	tsdbMetas := tsdbDiscoverer.Streams()
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetMetas)
+	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
@@ -258,9 +258,13 @@ func advanceConversion(
 			convert.WriteConcurrency(opts.writeConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
-		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, stepBlocks, convOpts...); err != nil {
+		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, step.ExternalLabels.Hash(), stepBlocks, convOpts...); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
+		}
+		if err := convert.WriteStreamFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
+			closeBlocks(log, stepBlocks...)
+			return fmt.Errorf("unable to write stream file: %w", err)
 		}
 		log.Info("Conversion completed", slog.String("date", step.Date.String()))
 

@@ -1,0 +1,9 @@
+syntax = "proto3";
+package stream;
+
+option go_package = "github.com/thanos-io/thanos-parquet-gateway/proto/streampb";
+
+
+message StreamDescriptor {
+  map<string, string> externalLabels = 1;
+}
