@@ -243,18 +243,18 @@ func newBlockForMeta(ctx context.Context, bkt objstore.Bucket, extLabels schema.
 		o(&cfg)
 	}
 
-	shards, err := readShards(ctx, bkt, m, extLabels, cfg)
+	shards, err := readShards(ctx, bkt, m, extLabels.Hash(), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read shards: %w", err)
 	}
 
-	return db.NewBlock(m, shards...), nil
+	return db.NewBlock(m, extLabels, shards...), nil
 }
 
-func readShards(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabels schema.ExternalLabels, cfg blockConfig) ([]*db.Shard, error) {
+func readShards(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabelsHash schema.ExternalLabelsHash, cfg blockConfig) ([]*db.Shard, error) {
 	shards := make([]*db.Shard, 0, m.Shards)
 	for sh := range int(m.Shards) {
-		shard, err := readShard(ctx, bkt, m, extLabels, sh, cfg)
+		shard, err := readShard(ctx, bkt, m, extLabelsHash, sh, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read shard %d: %w", sh, err)
 		}
@@ -269,8 +269,8 @@ func bucketReaderFromContext(bkt objstore.Bucket, name string) func(context.Cont
 	}
 }
 
-func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabels schema.ExternalLabels, shard int, cfg blockConfig) (s *db.Shard, err error) {
-	chunkspfile := schema.ChunksPfileNameForShard(extLabels.Hash(), m.Date, shard)
+func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabelsHash schema.ExternalLabelsHash, shard int, cfg blockConfig) (s *db.Shard, err error) {
+	chunkspfile := schema.ChunksPfileNameForShard(extLabelsHash, m.Date, shard)
 	attrs, err := bkt.Attributes(ctx, chunkspfile)
 	if err != nil {
 		return nil, fmt.Errorf("unable to attr chunks parquet file %q: %w", chunkspfile, err)
@@ -289,7 +289,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabel
 		return nil, fmt.Errorf("unable to open chunks parquet file %q: %w", chunkspfile, err)
 	}
 
-	labelspfile := schema.LabelsPfileNameForShard(extLabels.Hash(), m.Date, shard)
+	labelspfile := schema.LabelsPfileNameForShard(extLabelsHash, m.Date, shard)
 	labelspfilePath := filepath.Join(cfg.labelFilesDir, url.PathEscape(labelspfile))
 
 	// If we were not able to read the file for any reason we delete it and retry.
@@ -323,7 +323,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabel
 			}
 			return nil, rerr
 		}
-		return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx, extLabels), nil
+		return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
 	}
 	rdr, err := bkt.Get(ctx, labelspfile)
 	if err != nil {
@@ -358,5 +358,5 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabel
 		}
 		return nil, rerr
 	}
-	return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx, extLabels), nil
+	return db.NewShard(m, chunkspf, labelspf, bktRdrAtFromCtx), nil
 }

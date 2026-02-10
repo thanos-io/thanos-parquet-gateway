@@ -7,6 +7,8 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -31,6 +33,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 // Taken from https://github.com/thanos-community/thanos-promql-connector/blob/main/main.go
@@ -103,12 +106,19 @@ func ShardCountQuota(n int64) QueryGRPCOption {
 	}
 }
 
+type parquetDatabase interface {
+	Timerange() (int64, int64)
+	BlockStreams() map[schema.ExternalLabelsHash]db.BlockInfo
+	OverrideExtLabels() labels.Labels
+	Queryable(options ...db.QueryableOption) *db.DBQueryable
+}
+
 type QueryServer struct {
 	querypb.UnimplementedQueryServer
 	infopb.UnimplementedInfoServer
 	storepb.UnimplementedStoreServer
 
-	db     *db.DB
+	db     parquetDatabase
 	engine promql.QueryEngine
 
 	concurrentQuerySemaphore           *limits.Semaphore
@@ -157,21 +167,65 @@ func NewQueryServer(db *db.DB, engine promql.QueryEngine, opts ...QueryGRPCOptio
 }
 
 func (qs *QueryServer) Info(_ context.Context, _ *infopb.InfoRequest) (*infopb.InfoResponse, error) {
-	mint, maxt := qs.db.Timerange()
-	extlabels := qs.db.Extlabels()
-	return &infopb.InfoResponse{
-		ComponentType: component.Query.String(),
-		LabelSets:     zLabelSetsFromPromLabels(extlabels),
-		Store: &infopb.StoreInfo{
-			MinTime: mint,
-			MaxTime: maxt,
-			TsdbInfos: []infopb.TSDBInfo{
-				{
-					MinTime: mint,
-					MaxTime: maxt,
-					Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(extlabels)},
+	overrideExtLabels := qs.db.OverrideExtLabels()
+	if overrideExtLabels.Len() > 0 {
+		extLabels := overrideExtLabels
+		mint, maxt := qs.db.Timerange()
+
+		return &infopb.InfoResponse{
+			ComponentType: component.Query.String(),
+			LabelSets:     zLabelSetsFromPromLabels(extLabels),
+			Store: &infopb.StoreInfo{
+				MinTime: mint,
+				MaxTime: maxt,
+				TsdbInfos: []infopb.TSDBInfo{
+					{
+						MinTime: mint,
+						MaxTime: maxt,
+						Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(overrideExtLabels)},
+					},
 				},
 			},
+			Query: &infopb.QueryAPIInfo{},
+		}, nil
+	}
+
+	blockStreams := qs.db.BlockStreams()
+
+	mint, maxt := int64(math.MaxInt64), int64(math.MinInt64)
+
+	tsdbInfos := make([]infopb.TSDBInfo, 0, len(blockStreams))
+	allLabelSets := make([]labels.Labels, 0, len(blockStreams))
+
+	streamHashes := make([]uint64, 0, len(blockStreams))
+	for h := range blockStreams {
+		streamHashes = append(streamHashes, uint64(h))
+	}
+	slices.Sort(streamHashes)
+
+	for _, sth := range streamHashes {
+		sti := blockStreams[schema.ExternalLabelsHash(sth)]
+
+		mint = min(mint, sti.MinT)
+		maxt = max(maxt, sti.MaxT)
+
+		lbls := labels.FromMap(sti.Labels)
+		allLabelSets = append(allLabelSets, lbls)
+
+		tsdbInfos = append(tsdbInfos, infopb.TSDBInfo{
+			MinTime: sti.MinT,
+			MaxTime: sti.MaxT,
+			Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(lbls)},
+		})
+	}
+
+	return &infopb.InfoResponse{
+		ComponentType: component.Query.String(),
+		LabelSets:     zLabelSetsFromPromLabels(allLabelSets...),
+		Store: &infopb.StoreInfo{
+			MinTime:   mint,
+			MaxTime:   maxt,
+			TsdbInfos: tsdbInfos,
 		},
 		Query: &infopb.QueryAPIInfo{},
 	}, nil

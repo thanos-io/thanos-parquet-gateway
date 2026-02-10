@@ -25,13 +25,22 @@ import (
 )
 
 type Block struct {
-	meta      schema.Meta
-	shards    []*Shard
-	extLabels schema.ExternalLabels
+	meta          schema.Meta
+	shards        []*Shard
+	extLabels     schema.ExternalLabels
+	extPromLabels labels.Labels
 }
 
-func NewBlock(meta schema.Meta, shards ...*Shard) *Block {
-	return &Block{meta: meta, shards: shards}
+func NewBlock(meta schema.Meta, extLabels schema.ExternalLabels, shards ...*Shard) *Block {
+	return &Block{meta: meta, extLabels: extLabels, shards: shards, extPromLabels: labels.FromMap(extLabels)}
+}
+
+func (blk *Block) ExternalLabels() schema.ExternalLabels {
+	return blk.extLabels
+}
+
+func (blk *Block) ExternalPromLabels() labels.Labels {
+	return blk.extPromLabels
 }
 
 func (blk *Block) Meta() schema.Meta {
@@ -55,9 +64,13 @@ func (blk *Block) Queryable(
 	labelNamesRowCountQuota *limits.Quota,
 ) *BlockQueryable {
 	qs := make([]*ShardQueryable, 0, len(blk.shards))
+	var extLabels = blk.ExternalPromLabels()
+	if overrideExtLabels.Len() > 0 {
+		extLabels = overrideExtLabels
+	}
 	for _, shard := range blk.shards {
 		qs = append(qs, shard.Queryable(
-			overrideExtLabels,
+			extLabels,
 			replicaLabelNames,
 			selectChunkBytesQuota,
 			selectRowCountQuota,
@@ -69,12 +82,10 @@ func (blk *Block) Queryable(
 			labelNamesRowCountQuota,
 		))
 	}
-	return &BlockQueryable{extLabels: blk.extLabels, shards: qs}
+	return &BlockQueryable{shards: qs}
 }
 
 type BlockQueryable struct {
-	extLabels schema.ExternalLabels
-
 	shards []*ShardQueryable
 }
 
