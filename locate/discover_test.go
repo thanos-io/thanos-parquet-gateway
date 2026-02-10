@@ -170,7 +170,8 @@ func TestTSDBDiscoverer(t *testing.T) {
 		for _, m := range []metadata.Meta{
 			{
 				BlockMeta: tsdb.BlockMeta{
-					ULID: ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+					ULID:  ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
 				},
 				Thanos: metadata.Thanos{
 					Labels: map[string]string{
@@ -180,7 +181,8 @@ func TestTSDBDiscoverer(t *testing.T) {
 			},
 			{
 				BlockMeta: tsdb.BlockMeta{
-					ULID: ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					ULID:  ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
 				},
 				Thanos: metadata.Thanos{
 					Labels: map[string]string{
@@ -220,7 +222,8 @@ func TestTSDBDiscoverer(t *testing.T) {
 
 		meta := metadata.Meta{
 			BlockMeta: tsdb.BlockMeta{
-				ULID: ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+				ULID:  ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+				Stats: tsdb.BlockStats{NumChunks: 1},
 			},
 			Thanos: metadata.Thanos{
 				Labels: map[string]string{
@@ -260,7 +263,8 @@ func TestTSDBDiscoverer(t *testing.T) {
 
 		meta := metadata.Meta{
 			BlockMeta: tsdb.BlockMeta{
-				ULID: ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+				ULID:  ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+				Stats: tsdb.BlockStats{NumChunks: 1},
 			},
 		}
 		buf := bytes.NewBuffer(nil)
