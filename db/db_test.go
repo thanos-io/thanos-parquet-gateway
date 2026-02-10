@@ -18,6 +18,7 @@ import (
 	"github.com/cortexproject/promqlsmith"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/oklog/ulid/v2"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
@@ -1442,7 +1443,7 @@ func storageToDBWithBkt(tb testing.TB, h *tsdb.Head, bkt objstore.Bucket, extLab
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h, OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}))
 	require.NoError(tb, convert.WriteStreamDescriptorFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)
