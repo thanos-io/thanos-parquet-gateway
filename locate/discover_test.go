@@ -306,7 +306,7 @@ func createBlockForDate(ctx context.Context, t *testing.T, bkt objstore.Bucket, 
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
 
-	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: st.Head()}}))
+	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: st.Head(), OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}))
 
 	streamDescriptor := &streampb.StreamDescriptor{
 		ExternalLabels: extLabels,

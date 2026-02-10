@@ -45,11 +45,20 @@ type Convertible interface {
 	Meta() tsdb.BlockMeta
 	Dir() string
 	Close() error
+	fmt.Stringer
 }
 
 // This is mostly used for testing when using tsdb.Head as Convertible.
 type HeadBlock struct {
 	*tsdb.Head
+	OverrideBLID string
+}
+
+func (hb *HeadBlock) String() string {
+	if hb.OverrideBLID != "" {
+		return hb.OverrideBLID
+	}
+	return hb.Head.String()
 }
 
 func (hb *HeadBlock) Dir() string {
@@ -235,7 +244,7 @@ func ConvertTSDBBlock(
 		return fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
-	if err := writeMetaFile(ctx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt); err != nil {
+	if err := writeMetaFile(ctx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt, blks); err != nil {
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
@@ -258,12 +267,24 @@ type blockSeries struct {
 	labels    labels.Labels
 }
 
-func writeMetaFile(ctx context.Context, day util.Date, extLabelsHash schema.ExternalLabelsHash, numShards int64, bkt objstore.Bucket) error {
+func writeMetaFile(
+	ctx context.Context,
+	day util.Date,
+	extLabelsHash schema.ExternalLabelsHash,
+	numShards int64,
+	bkt objstore.Bucket,
+	blks []Convertible,
+) error {
+	convertedFromIDs := make([]string, 0, len(blks))
+	for _, b := range blks {
+		convertedFromIDs = append(convertedFromIDs, b.String())
+	}
 	meta := &metapb.Metadata{
-		Version: schema.V2,
-		Mint:    day.MinT(),
-		Maxt:    day.MaxT(),
-		Shards:  numShards,
+		Version:            schema.V2,
+		Mint:               day.MinT(),
+		Maxt:               day.MaxT(),
+		Shards:             numShards,
+		ConvertedFromBLIDs: convertedFromIDs,
 	}
 
 	metaBytes, err := proto.Marshal(meta)

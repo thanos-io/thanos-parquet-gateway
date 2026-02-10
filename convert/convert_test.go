@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/util/teststorage"
@@ -64,13 +65,17 @@ func TestConverter(t *testing.T) {
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
+	blkid := ulid.MustNewDefault(time.Now())
+
+	t.Log(blkid.String())
+
 	opts := []ConvertOption{
 		SortBy(labels.MetricName),
 		RowGroupSize(250),
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h, OverrideBLID: blkid.String()}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -88,6 +93,8 @@ func TestConverter(t *testing.T) {
 	if n := meta.Shards; n != 2 {
 		t.Fatalf("unexpected number of shards: %d", n)
 	}
+
+	require.Contains(t, meta.ConvertedFromBLIDs, blkid)
 
 	totalRows := int64(0)
 	for i := range int(meta.Shards) {
@@ -163,7 +170,7 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 		SortBy(labels.MetricName),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h, OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }

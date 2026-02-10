@@ -19,6 +19,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thanos-io/objstore"
@@ -322,13 +323,23 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extL
 	for k, v := range metapb.GetColumnsForName() {
 		m[k] = v.GetColumns()
 	}
+
+	fromULIDs := make(map[ulid.ULID]struct{}, len(metapb.GetConvertedFromBLIDs()))
+	for _, s := range metapb.GetConvertedFromBLIDs() {
+		id, err := ulid.Parse(s)
+		if err != nil {
+			return schema.Meta{}, fmt.Errorf("unable to parse converted from BLID %q: %w", s, err)
+		}
+		fromULIDs[id] = struct{}{}
+	}
 	return schema.Meta{
-		Version:        int(metapb.GetVersion()),
-		Date:           date,
-		Mint:           metapb.GetMint(),
-		Maxt:           metapb.GetMaxt(),
-		Shards:         metapb.GetShards(),
-		ColumnsForName: m,
+		Version:            int(metapb.GetVersion()),
+		Date:               date,
+		Mint:               metapb.GetMint(),
+		Maxt:               metapb.GetMaxt(),
+		Shards:             metapb.GetShards(),
+		ColumnsForName:     m,
+		ConvertedFromBLIDs: fromULIDs,
 	}, nil
 }
 
