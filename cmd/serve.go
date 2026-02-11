@@ -26,6 +26,7 @@ import (
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/info/infopb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
+	grpc_health "google.golang.org/grpc/health/grpc_health_v1"
 
 	_ "github.com/mostynb/go-grpc-compression/snappy"
 	"google.golang.org/grpc"
@@ -33,6 +34,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
+	"google.golang.org/grpc/health"
 
 	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
 	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
@@ -227,6 +229,8 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		grpc.UnaryInterceptor(cfgrpc.ServerMetrics.UnaryServerInterceptor()),
 		grpc.StreamInterceptor(cfgrpc.ServerMetrics.StreamServerInterceptor()),
 	)
+	healthServer := health.NewServer()
+	grpc_health.RegisterHealthServer(server, healthServer)
 
 	queryServer := cfgrpc.NewQueryServer(
 		db,
@@ -258,6 +262,9 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		return server.Serve(l)
 	}, func(error) {
 		log.Info("Shutting down thanos api", slog.Int("port", opts.port))
+
+		healthServer.SetServingStatus("", grpc_health.HealthCheckResponse_NOT_SERVING)
+
 		ctx, cancel := context.WithTimeout(context.Background(), opts.shutdownTimeout)
 		defer cancel()
 
