@@ -532,6 +532,11 @@ func (s *TSDBDiscoverer) Discover(ctx context.Context) error {
 		return v.Thanos.Downsample.Resolution != downsample.ResLevel0
 	})
 
+	// filter out blocks with no chunks (cannot be converted)
+	maps.DeleteFunc(nm, func(_ string, v metadata.Meta) bool {
+		return v.Stats.NumChunks == 0
+	})
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
