@@ -26,6 +26,7 @@ import (
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/info/infopb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
+	grpc_health "google.golang.org/grpc/health/grpc_health_v1"
 
 	_ "github.com/mostynb/go-grpc-compression/snappy"
 	"google.golang.org/grpc"
@@ -33,6 +34,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
+	"google.golang.org/grpc/health"
 
 	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
 	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
@@ -70,7 +72,7 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("STDOUT").EnumVar(&opts.exporterType, "JAEGER", "STDOUT")
+	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("").EnumVar(&opts.exporterType, "JAEGER", "STDOUT", "")
 	cmd.Flag("tracing.jaeger.endpoint", "endpoint to send traces, eg. https://example.com:4318/v1/traces").StringVar(&opts.jaegerEndpoint)
 	cmd.Flag("tracing.sampling.param", "sample of traces to send").Default("0.1").Float64Var(&opts.samplingParam)
 	cmd.Flag("tracing.sampling.type", "type of sampling").Default("PROBABILISTIC").EnumVar(&opts.samplingType, "PROBABILISTIC", "ALWAYS", "NEVER")
@@ -89,6 +91,7 @@ func (opts *syncerOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("block.filter.thanos-backfill.endpoint", "endpoint to ignore for backfill").StringVar(&opts.filterThanosBackfillEndpoint)
 	cmd.Flag("block.filter.thanos-backfill.interval", "interval to update thanos-backfill timerange").Default("1m").DurationVar(&opts.filterThanosBackfillUpdateInterval)
 	cmd.Flag("block.filter.thanos-backfill.overlap", "overlap interval to leave for backfill").Default("24h").DurationVar(&opts.filterThanosBackfillOverlap)
+	cmd.Flag("block.labelfilepath", "Path where to put label files").Default("/tmp").StringVar(&opts.syncerLabelFilesDir)
 }
 
 func (opts *queryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
@@ -226,6 +229,8 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		grpc.UnaryInterceptor(cfgrpc.ServerMetrics.UnaryServerInterceptor()),
 		grpc.StreamInterceptor(cfgrpc.ServerMetrics.StreamServerInterceptor()),
 	)
+	healthServer := health.NewServer()
+	grpc_health.RegisterHealthServer(server, healthServer)
 
 	queryServer := cfgrpc.NewQueryServer(
 		db,
@@ -257,6 +262,9 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		return server.Serve(l)
 	}, func(error) {
 		log.Info("Shutting down thanos api", slog.Int("port", opts.port))
+
+		healthServer.SetServingStatus("", grpc_health.HealthCheckResponse_NOT_SERVING)
+
 		ctx, cancel := context.WithTimeout(context.Background(), opts.shutdownTimeout)
 		defer cancel()
 

@@ -176,8 +176,9 @@ func (qs *QueryServer) Info(_ context.Context, _ *infopb.InfoRequest) (*infopb.I
 			ComponentType: component.Query.String(),
 			LabelSets:     zLabelSetsFromPromLabels(extLabels),
 			Store: &infopb.StoreInfo{
-				MinTime: mint,
-				MaxTime: maxt,
+				MinTime:                      mint,
+				MaxTime:                      maxt,
+				SupportsWithoutReplicaLabels: true,
 				TsdbInfos: []infopb.TSDBInfo{
 					{
 						MinTime: mint,
