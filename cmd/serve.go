@@ -89,6 +89,7 @@ func (opts *syncerOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("block.filter.thanos-backfill.endpoint", "endpoint to ignore for backfill").StringVar(&opts.filterThanosBackfillEndpoint)
 	cmd.Flag("block.filter.thanos-backfill.interval", "interval to update thanos-backfill timerange").Default("1m").DurationVar(&opts.filterThanosBackfillUpdateInterval)
 	cmd.Flag("block.filter.thanos-backfill.overlap", "overlap interval to leave for backfill").Default("24h").DurationVar(&opts.filterThanosBackfillOverlap)
+	cmd.Flag("block.labelfilepath", "Path where to put label files").Default("/tmp").StringVar(&opts.syncerLabelFilesDir)
 }
 
 func (opts *queryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
