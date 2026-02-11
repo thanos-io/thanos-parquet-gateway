@@ -19,7 +19,6 @@ var (
 
 func RegisterMetrics(reg prometheus.Registerer) error {
 	lastSuccessfulConvertTime.Set(0)
-
 	return errors.Join(
 		reg.Register(lastSuccessfulConvertTime),
 	)

@@ -316,11 +316,11 @@ func materializeChunks(
 ) ([][]chunks.Meta, error) {
 	rowCount := totalRows(rr)
 
-	minChunkCol, ok := schema.ChunkColumnIndex(m.Meta, time.UnixMilli(mint))
+	minChunkCol, ok := schema.ChunkColumnIndexForMint(time.UnixMilli(mint))
 	if !ok {
 		return nil, errors.New("unable to find min chunk column")
 	}
-	maxChunkCol, ok := schema.ChunkColumnIndex(m.Meta, time.UnixMilli(maxt))
+	maxChunkCol, ok := schema.ChunkColumnIndexForMaxt(time.UnixMilli(maxt))
 	if !ok {
 		return nil, errors.New("unable to find max chunk column")
 	}

@@ -8,9 +8,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/alecthomas/units"
 	"github.com/prometheus/prometheus/model/labels"
@@ -31,6 +33,7 @@ import (
 type DB struct {
 	syncer            syncer
 	overrideExtLabels labels.Labels
+	log               *slog.Logger
 }
 
 type syncer interface {
@@ -49,12 +52,12 @@ func ExternalLabels(extlabels labels.Labels) DBOption {
 	}
 }
 
-func NewDB(syncer syncer, opts ...DBOption) *DB {
+func NewDB(syncer syncer, logger *slog.Logger, opts ...DBOption) *DB {
 	cfg := dbConfig{extLabels: labels.EmptyLabels()}
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &DB{syncer: syncer, overrideExtLabels: cfg.extLabels}
+	return &DB{syncer: syncer, overrideExtLabels: cfg.extLabels, log: logger}
 }
 
 func (db *DB) Timerange() (int64, int64) {
@@ -198,6 +201,7 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 
 	return &DBQueryable{
 		blocks:                             db.syncer.Blocks(),
+		log:                                db.log,
 		extLabels:                          db.overrideExtLabels,
 		replicaLabelNames:                  cfg.replicaLabelsNames,
 		selectChunkBytesQuota:              cfg.selectChunkBytesQuota,
@@ -213,6 +217,7 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 
 type DBQueryable struct {
 	blocks []*Block
+	log    *slog.Logger
 
 	extLabels labels.Labels
 
@@ -256,6 +261,11 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 		}
 		bs = append(bs, blk)
 	}
+
+	// Filter out partition blocks if a daily block exists for the same date.
+	// This prevents duplicate data when both partitions and daily blocks exist
+	// during the transition period (after daily conversion, before partition cleanup).
+	bs = filterOverlappingPartitions(bs, db.log)
 
 	// We can honor projections if all blocks that participate in the query
 	// are at least V2. We introduced a labels-hash column in V2 which is
@@ -450,4 +460,58 @@ func (q *DBChunkQuerier) selectChunksFn(ctx context.Context, sorted bool, hints 
 		return sss[0]
 	}
 	return storage.NewMergeChunkSeriesSet(sss, hints.Limit, storage.NewConcatenatingChunkSeriesMerger())
+}
+
+// filterOverlappingPartitions removes partition blocks if a daily block exists for the same date.
+// This ensures we prefer daily blocks over partitions to avoid reading duplicate data.
+//
+// Example: If we have blocks [2025/12/02, 2025/12/02/parts/00-02, 2025/12/02/parts/02-04],
+// only 2025/12/02 is kept because it covers the full day.
+func filterOverlappingPartitions(blocks []*Block, log *slog.Logger) []*Block {
+	// Build set of daily block dates
+	dailyBlocks := make(map[string]struct{})
+	for _, blk := range blocks {
+		name := blk.Meta().Name
+		if !schema.IsPartition(name) {
+			dailyBlocks[name] = struct{}{}
+		}
+	}
+
+	// If no daily blocks, return all blocks unchanged
+	if len(dailyBlocks) == 0 {
+		return blocks
+	}
+
+	// Filter out partitions that have a corresponding daily block
+	result := make([]*Block, 0, len(blocks))
+	for _, blk := range blocks {
+		name := blk.Meta().Name
+		if schema.IsPartition(name) {
+			dailyName := schema.DailyBlockNameForPartition(name)
+			if _, hasDailyBlock := dailyBlocks[dailyName]; hasDailyBlock {
+				log.Debug("Skipping partition block, daily block exists",
+					slog.String("partition", name),
+					slog.String("daily", dailyName),
+				)
+				continue
+			}
+		}
+		result = append(result, blk)
+	}
+
+	return result
+}
+
+// blockTypeFromTimeRange determines the block type based on its time range.
+// Daily blocks span 24 hours, partition blocks span less.
+func blockTypeFromTimeRange(mint, maxt int64) string {
+	duration := time.Duration(maxt-mint) * time.Millisecond
+	switch {
+	case duration >= 24*time.Hour:
+		return "daily"
+	case duration >= 8*time.Hour:
+		return "partition"
+	default:
+		return "unknown"
+	}
 }

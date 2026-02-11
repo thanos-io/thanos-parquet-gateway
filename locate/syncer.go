@@ -270,7 +270,7 @@ func bucketReaderFromContext(bkt objstore.Bucket, name string) func(context.Cont
 }
 
 func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabelsHash schema.ExternalLabelsHash, shard int, cfg blockConfig) (s *db.Shard, err error) {
-	chunkspfile := schema.ChunksPfileNameForShard(extLabelsHash, m.Date, shard)
+	chunkspfile := schema.ChunksPfileNameForShard(extLabelsHash, m.Date, m.Partition, shard)
 	attrs, err := bkt.Attributes(ctx, chunkspfile)
 	if err != nil {
 		return nil, fmt.Errorf("unable to attr chunks parquet file %q: %w", chunkspfile, err)
@@ -289,7 +289,7 @@ func readShard(ctx context.Context, bkt objstore.Bucket, m schema.Meta, extLabel
 		return nil, fmt.Errorf("unable to open chunks parquet file %q: %w", chunkspfile, err)
 	}
 
-	labelspfile := schema.LabelsPfileNameForShard(extLabelsHash, m.Date, shard)
+	labelspfile := schema.LabelsPfileNameForShard(extLabelsHash, m.Date, m.Partition, shard)
 	labelspfilePath := filepath.Join(cfg.labelFilesDir, url.PathEscape(labelspfile))
 
 	// If we were not able to read the file for any reason we delete it and retry.

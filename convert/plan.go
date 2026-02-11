@@ -15,9 +15,18 @@ import (
 )
 
 type Step struct {
-	Date           util.Date       // Date for which we are building a parquet block.
-	Sources        []metadata.Meta // Source TSDB blocks we will use to generate a parquet block.
+	Date           util.Date        // Date for which we are building a parquet block.
+	Partition      *util.Partition  // Partition within the day (nil for daily blocks).
+	Sources        []metadata.Meta  // Source TSDB blocks we will use to generate a parquet block.
 	ExternalLabels schema.ExternalLabels
+}
+
+// String returns a human-readable representation of the step.
+func (s Step) String() string {
+	if s.Partition != nil {
+		return s.Partition.String()
+	}
+	return s.Date.String()
 }
 
 // isFullyCovered returns true if blocks for this date cover the whole day.
@@ -42,6 +51,11 @@ type Plan struct {
 	Steps []Step
 }
 
+const (
+	// DefaultPartitionLookback is the default time window for partition conversion.
+	DefaultPartitionLookback = 24 * time.Hour
+)
+
 type Planner struct {
 	// Do not create parquet blocks that are younger then this.
 	notAfter time.Time
@@ -49,10 +63,35 @@ type Planner struct {
 	// if it would be converting a TSDB block that spans over more days, to avoid re-downloading that block
 	// for the next plan.
 	maxDays int
+
+	// Partition configuration
+	partitionDuration time.Duration // Duration of each partition (e.g., 2h)
+	partitionMaxSteps int           // Maximum partitions to convert per cycle
+	partitionLookback time.Duration // Time window from notAfter to consider for partitions
 }
 
+// NewPlanner creates a new planner for historical (daily) conversions.
 func NewPlanner(notAfter time.Time, maxDays int) Planner {
-	return Planner{notAfter: notAfter, maxDays: maxDays}
+	return Planner{
+		notAfter:          notAfter,
+		maxDays:           maxDays,
+		partitionDuration: 24 * time.Hour,
+		partitionLookback: DefaultPartitionLookback,
+	}
+}
+
+// NewPlannerWithPartitions creates a new planner with partition support.
+func NewPlannerWithPartitions(notAfter time.Time, maxDays int, partitionDuration time.Duration, partitionMaxSteps int, partitionLookback time.Duration) Planner {
+	if partitionLookback == 0 {
+		partitionLookback = DefaultPartitionLookback
+	}
+	return Planner{
+		notAfter:          notAfter,
+		maxDays:           maxDays,
+		partitionDuration: partitionDuration,
+		partitionMaxSteps: partitionMaxSteps,
+		partitionLookback: partitionLookback,
+	}
 }
 
 func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream) Plan {
@@ -175,6 +214,193 @@ func limitSteps(steps []Step, limit int) []Step {
 	}
 
 	return steps[:limit]
+}
+
+// PlanPartitions plans partitions for recent data only (within lookback window).
+// Works with flat maps of metas keyed by ULID/name.
+func (p Planner) PlanPartitions(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	lookbackCutoff := p.notAfter.Add(-p.partitionLookback)
+
+	// Find all days that have daily parquet blocks
+	daysWithDailyBlocks := make(map[string]struct{})
+	for name, pq := range parquetMetas {
+		if schema.IsPartition(name) {
+			continue
+		}
+		for _, date := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+			daysWithDailyBlocks[date.String()] = struct{}{}
+		}
+	}
+
+	// Find TSDB blocks that cover days within the partition window
+	dayToBlocks := make(map[string]map[string]metadata.Meta)
+	for ulid, tsdb := range tsdbMetas {
+		for _, date := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			dayStr := date.String()
+			dayStart := time.UnixMilli(date.MinT())
+			dayEnd := time.UnixMilli(date.MaxT())
+
+			if !dayEnd.After(lookbackCutoff) || !dayStart.Before(p.notAfter) {
+				continue
+			}
+
+			if _, hasDailyBlock := daysWithDailyBlocks[dayStr]; hasDailyBlock {
+				continue
+			}
+
+			if dayToBlocks[dayStr] == nil {
+				dayToBlocks[dayStr] = make(map[string]metadata.Meta)
+			}
+			dayToBlocks[dayStr][ulid] = tsdb
+		}
+	}
+
+	// Plan partitions for each eligible day
+	steps := make([]Step, 0)
+	for dayStr, blocks := range dayToBlocks {
+		date, err := util.DateFromString(dayStr)
+		if err != nil {
+			continue
+		}
+		daySteps := p.planDayPartitions(blocks, parquetMetas, date)
+		steps = append(steps, daySteps...)
+	}
+
+	if len(steps) == 0 {
+		return Plan{Steps: nil}
+	}
+
+	// Sort steps, most recent first
+	slices.SortFunc(steps, func(a, b Step) int {
+		return cmp.Compare(b.Partition.MinT(), a.Partition.MinT())
+	})
+
+	if p.partitionMaxSteps > 0 && len(steps) > p.partitionMaxSteps {
+		steps = steps[:p.partitionMaxSteps]
+	}
+
+	return Plan{Steps: steps}
+}
+
+// PlanHistorical returns daily conversion steps for days that are fully in the past.
+// Works with flat maps of metas keyed by ULID/name.
+func (p Planner) PlanHistorical(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	// Filter to only blocks that are fully in the past
+	historicalBlocks := make(map[string]metadata.Meta)
+	for ulid, tsdb := range tsdbMetas {
+		for _, date := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			dayEnd := time.UnixMilli(date.MaxT())
+			if dayEnd.Before(p.notAfter) {
+				historicalBlocks[ulid] = tsdb
+				break
+			}
+		}
+	}
+
+	if len(historicalBlocks) == 0 {
+		return Plan{Steps: nil}
+	}
+
+	return p.planDaily(historicalBlocks, parquetMetas)
+}
+
+// planDaily plans daily conversions from flat maps.
+func (p Planner) planDaily(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta) Plan {
+	tsdbDates := map[util.Date][]metadata.Meta{}
+	for _, tsdb := range tsdbMetas {
+		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
+		}
+	}
+
+	pqDates := map[util.Date]struct{}{}
+	for name, pq := range parquetMetas {
+		if schema.IsPartition(name) {
+			continue
+		}
+		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+			pqDates[partialDate] = struct{}{}
+		}
+	}
+
+	steps := make([]Step, 0, len(tsdbDates))
+	for date, metas := range tsdbDates {
+		if !date.ToTime().Before(p.notAfter) {
+			continue
+		}
+		if _, ok := pqDates[date]; ok {
+			continue
+		}
+
+		slices.SortFunc(metas, func(a, b metadata.Meta) int {
+			return cmp.Compare(a.MinTime, b.MinTime)
+		})
+
+		steps = append(steps, Step{
+			Date:      date,
+			Partition: nil,
+			Sources:   metas,
+		})
+	}
+
+	slices.SortFunc(steps, func(a, b Step) int {
+		return cmp.Compare(b.Date.MinT(), a.Date.MinT())
+	})
+
+	steps = truncateLastPartialDay(steps)
+	steps = limitSteps(steps, p.maxDays)
+
+	return Plan{Steps: steps}
+}
+
+// planDayPartitions plans partitions for a single day.
+func (p Planner) planDayPartitions(tsdbMetas map[string]metadata.Meta, parquetMetas map[string]schema.Meta, day util.Date) []Step {
+	dayStart, dayEnd := day.MinT(), day.MaxT()
+	partitions := util.SplitIntoPartitions(dayStart, dayEnd, p.partitionDuration)
+
+	existingPartitions := make(map[string]struct{})
+	for name := range parquetMetas {
+		existingPartitions[name] = struct{}{}
+	}
+
+	steps := make([]Step, 0)
+
+	for _, partition := range partitions {
+		if !partition.End().Before(p.notAfter) {
+			continue
+		}
+
+		partitionName := schema.BlockNameForPartition(partition)
+
+		if _, exists := existingPartitions[partitionName]; exists {
+			continue
+		}
+
+		var partitionBlocks []metadata.Meta
+		for _, tsdb := range tsdbMetas {
+			overlaps := tsdb.MaxTime > partition.MinT() && tsdb.MinTime < partition.MaxT()
+			if overlaps {
+				partitionBlocks = append(partitionBlocks, tsdb)
+			}
+		}
+
+		if len(partitionBlocks) == 0 {
+			continue
+		}
+
+		slices.SortFunc(partitionBlocks, func(a, b metadata.Meta) int {
+			return cmp.Compare(a.MinTime, b.MinTime)
+		})
+
+		p := partition // Create a copy for the pointer
+		steps = append(steps, Step{
+			Date:      day,
+			Partition: &p,
+			Sources:   partitionBlocks,
+		})
+	}
+
+	return steps
 }
 
 // Merge dates from all steps into a single slice.

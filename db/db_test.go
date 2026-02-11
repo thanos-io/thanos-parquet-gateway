@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"slices"
 	"sort"
@@ -1359,7 +1361,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, nil, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
 	require.NoError(tb, convert.WriteStreamFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)
@@ -1368,7 +1370,8 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	syncer := locate.NewSyncer(bkt, locate.BlockOptions(locate.LabelFilesDir(tb.TempDir())))
 	require.NoError(tb, syncer.Sync(ctx, discoverer.Streams()))
 
-	return db.NewDB(syncer, opts...)
+	testLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return db.NewDB(syncer, testLogger, opts...)
 }
 
 func storageToDB(tb testing.TB, st *teststorage.TestStorage, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {

@@ -173,6 +173,7 @@ func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
 	day util.Date,
+	partition *util.Partition,
 	extLabelsHash schema.ExternalLabelsHash,
 	blks []Convertible,
 	opts ...ConvertOption,
@@ -192,7 +193,14 @@ func ConvertTSDBBlock(
 	for i := range opts {
 		opts[i](cfg)
 	}
-	start, end := day.MinT(), day.MaxT()
+
+	// Determine time range based on partition or date
+	var start, end int64
+	if partition != nil {
+		start, end = partition.MinT(), partition.MaxT()
+	} else {
+		start, end = day.MinT(), day.MaxT()
+	}
 
 	shardedRowReaders, err := shardedIndexRowReader(ctx, start, end, blks, *cfg)
 	if err != nil {
@@ -209,6 +217,7 @@ func ConvertTSDBBlock(
 		errGroup.Go(func() error {
 			converter := newConverter(
 				day,
+				partition,
 				shard,
 				extLabelsHash,
 				rr,
@@ -235,7 +244,7 @@ func ConvertTSDBBlock(
 		return fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
-	if err := writeMetaFile(ctx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt); err != nil {
+	if err := writeMetaFile(ctx, day, partition, extLabelsHash, int64(len(shardedRowReaders)), bkt); err != nil {
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
@@ -258,11 +267,19 @@ type blockSeries struct {
 	labels    labels.Labels
 }
 
-func writeMetaFile(ctx context.Context, day util.Date, extLabelsHash schema.ExternalLabelsHash, numShards int64, bkt objstore.Bucket) error {
+func writeMetaFile(ctx context.Context, day util.Date, partition *util.Partition, extLabelsHash schema.ExternalLabelsHash, numShards int64, bkt objstore.Bucket) error {
+	// Determine time range based on partition or date
+	var mint, maxt int64
+	if partition != nil {
+		mint, maxt = partition.MinT(), partition.MaxT()
+	} else {
+		mint, maxt = day.MinT(), day.MaxT()
+	}
+
 	meta := &metapb.Metadata{
 		Version: schema.V2,
-		Mint:    day.MinT(),
-		Maxt:    day.MaxT(),
+		Mint:    mint,
+		Maxt:    maxt,
 		Shards:  numShards,
 	}
 
@@ -270,7 +287,7 @@ func writeMetaFile(ctx context.Context, day util.Date, extLabelsHash schema.Exte
 	if err != nil {
 		return fmt.Errorf("unable to marshal meta bytes: %w", err)
 	}
-	if err := bkt.Upload(ctx, schema.MetaFileNameForBlock(day, extLabelsHash), bytes.NewReader(metaBytes)); err != nil {
+	if err := bkt.Upload(ctx, schema.MetaFileNameForBlock(day, partition, extLabelsHash), bytes.NewReader(metaBytes)); err != nil {
 		return fmt.Errorf("unable to upload meta file: %w", err)
 	}
 
@@ -524,6 +541,7 @@ func compareBySortedLabelsFunc(sortedLabels []string) func(a, b labels.Labels) i
 
 type converter struct {
 	date       util.Date
+	partition  *util.Partition
 	mint, maxt int64
 
 	shard        int
@@ -546,6 +564,7 @@ type converter struct {
 
 func newConverter(
 	date util.Date,
+	partition *util.Partition,
 	shard int,
 	extLabelsHash schema.ExternalLabelsHash,
 	rr *indexRowReader,
@@ -560,10 +579,19 @@ func newConverter(
 	chunkPageBufferSize int,
 
 ) *converter {
+	// Determine time range based on partition or date
+	var mint, maxt int64
+	if partition != nil {
+		mint, maxt = partition.MinT(), partition.MaxT()
+	} else {
+		mint, maxt = date.MinT(), date.MaxT()
+	}
+
 	return &converter{
 		date:          date,
-		mint:          date.MinT(),
-		maxt:          date.MaxT(),
+		partition:     partition,
+		mint:          mint,
+		maxt:          maxt,
 		shard:         shard,
 		extLabelsHash: extLabelsHash,
 
@@ -616,11 +644,11 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	s := c.rr.Schema()
 
 	w, err := newSplitFileWriter(ctx, c.bkt, s, map[string]writerConfig{
-		schema.LabelsPfileNameForShard(c.extLabelsHash, c.date, c.shard): {
+		schema.LabelsPfileNameForShard(c.extLabelsHash, c.date, c.partition, c.shard): {
 			s:    schema.WithCompression(schema.LabelsProjection(s)),
 			opts: c.labelWriterOptions(),
 		},
-		schema.ChunksPfileNameForShard(c.extLabelsHash, c.date, c.shard): {
+		schema.ChunksPfileNameForShard(c.extLabelsHash, c.date, c.partition, c.shard): {
 			s:    schema.WithCompression(schema.ChunkProjection(s)),
 			opts: c.chunkWriterOptions(),
 		},

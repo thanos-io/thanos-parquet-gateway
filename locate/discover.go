@@ -91,6 +91,20 @@ func (s *Discoverer) Streams() map[schema.ExternalLabelsHash]schema.ParquetBlock
 	return res
 }
 
+// Metas returns a flat map of all parquet block metas keyed by block name.
+func (s *Discoverer) Metas() map[string]schema.Meta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make(map[string]schema.Meta)
+	for _, stream := range s.blocks {
+		for _, meta := range stream.Metas {
+			result[meta.Name] = meta
+		}
+	}
+	return result
+}
+
 func (s *Discoverer) Discover(ctx context.Context) error {
 	type futureBlocksStream struct {
 		schema.ParquetBlocksStream
@@ -297,7 +311,7 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 }
 
 func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.Meta, error) {
-	mfile := schema.MetaFileNameForBlock(date, extLabelsHash)
+	mfile := schema.MetaFileNameForBlock(date, nil, extLabelsHash)
 	if _, err := bkt.Attributes(ctx, mfile); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
 	}
@@ -322,8 +336,15 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extL
 	for k, v := range metapb.GetColumnsForName() {
 		m[k] = v.GetColumns()
 	}
+	// Build the block name from date and external labels hash
+	blockName := schema.BlockNameForDay(date)
+	if extLabelsHash != 0 {
+		blockName = fmt.Sprintf("%s/%s", extLabelsHash.String(), blockName)
+	}
+
 	return schema.Meta{
 		Version:        int(metapb.GetVersion()),
+		Name:           blockName,
 		Date:           date,
 		Mint:           metapb.GetMint(),
 		Maxt:           metapb.GetMaxt(),
@@ -427,6 +448,18 @@ func (s *TSDBDiscoverer) Streams() map[schema.ExternalLabelsHash]schema.TSDBBloc
 	}
 
 	return out
+}
+
+// Metas returns a flat map of all TSDB block metas keyed by ULID string.
+func (s *TSDBDiscoverer) Metas() map[string]metadata.Meta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result := make(map[string]metadata.Meta, len(s.metas))
+	for k, v := range s.metas {
+		result[k] = v
+	}
+	return result
 }
 
 func (s *TSDBDiscoverer) Discover(ctx context.Context) error {

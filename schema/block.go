@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -90,22 +91,20 @@ type TSDBBlocksStream struct {
 
 type Meta struct {
 	Version        int
+	Name           string // Block name (e.g., "2025/01/19" or "2025/01/19/parts/00-02")
 	Date           util.Date
+	Partition      *util.Partition // Non-nil for partition blocks
 	Mint, Maxt     int64
 	Shards         int64
 	ColumnsForName map[string][]string
 }
 
-var blockPathRE = regexp.MustCompile(
-	`^((?P<hash>[0-9]{1,64})/)?(?P<year>[0-9]{4})-(?P<month>[0-9]{1,2})-(?P<day>[0-9]{1,2})/(?P<file>[^/]+)$`,
-)
-
 var streamPathRE = regexp.MustCompile(
 	fmt.Sprintf(`^(?P<hash>[0-9]{1,64})/%s$`, regexp.QuoteMeta(StreamFile)),
 )
 
-func SplitStreamPath(path string) (ExternalLabelsHash, bool) {
-	m := streamPathRE.FindStringSubmatch(path)
+func SplitStreamPath(p string) (ExternalLabelsHash, bool) {
+	m := streamPathRE.FindStringSubmatch(p)
 	if m == nil {
 		return 0, false
 	}
@@ -117,41 +116,85 @@ func SplitStreamPath(path string) (ExternalLabelsHash, bool) {
 	return ExternalLabelsHash(eh), true
 }
 
-func SplitBlockPath(path string) (util.Date, string, ExternalLabelsHash, bool) {
-	var (
-		file          string
-		extLabelsHash ExternalLabelsHash
-	)
-
-	m := blockPathRE.FindStringSubmatch(path)
-	if m == nil {
+// SplitBlockPath splits a block path into its components.
+// Supported formats:
+//   - <hash>/YYYY/MM/DD/<file> (daily with hash)
+//   - YYYY/MM/DD/<file> (daily without hash)
+//   - <hash>/YYYY/MM/DD/parts/HH-HH/<file> (partition with hash)
+//   - YYYY/MM/DD/parts/HH-HH/<file> (partition without hash)
+//
+// Returns: date, file, extLabelsHash, ok
+func SplitBlockPath(p string) (util.Date, string, ExternalLabelsHash, bool) {
+	parts := strings.Split(p, "/")
+	if len(parts) < 4 {
 		return util.Date{}, "", 0, false
 	}
 
-	eh, err := strconv.ParseUint(m[2], 10, 64)
-	if err != nil {
-		eh = 0
+	// Try parsing without hash first (YYYY/MM/DD/... format)
+	// Check if parts[0] looks like a year (1900-9999)
+	if y, err := strconv.Atoi(parts[0]); err == nil && y >= 1900 && y <= 9999 {
+		return splitBlockPathWithOffset(parts, 0, 0)
 	}
-	extLabelsHash = ExternalLabelsHash(eh)
 
-	y, err := strconv.Atoi(m[3])
-	if err != nil {
-		return util.Date{}, "", 0, false
+	// If parts[0] doesn't look like a year, try parsing it as a hash
+	if eh, err := strconv.ParseUint(parts[0], 10, 64); err == nil {
+		if len(parts) >= 5 {
+			return splitBlockPathWithOffset(parts, 1, ExternalLabelsHash(eh))
+		}
 	}
-	mo, err := strconv.Atoi(m[4])
-	if err != nil {
-		return util.Date{}, "", 0, false
-	}
-	if mo == 0 {
-		return util.Date{}, "", 0, false
-	}
-	d, err := strconv.Atoi(m[5])
-	if err != nil {
-		return util.Date{}, "", 0, false
-	}
-	file = m[6]
 
-	return util.NewDate(y, time.Month(mo), d), file, extLabelsHash, true
+	return util.Date{}, "", 0, false
+}
+
+// splitBlockPathWithOffset parses block path components starting from offset.
+func splitBlockPathWithOffset(parts []string, offset int, extLabelsHash ExternalLabelsHash) (util.Date, string, ExternalLabelsHash, bool) {
+	// Need at least YYYY/MM/DD/<file> after offset
+	if len(parts) < offset+4 {
+		return util.Date{}, "", 0, false
+	}
+
+	// Parse date components
+	y, err := strconv.Atoi(parts[offset])
+	if err != nil || y < 1900 || y > 9999 {
+		return util.Date{}, "", 0, false
+	}
+	mo, err := strconv.Atoi(parts[offset+1])
+	if err != nil || mo < 1 || mo > 12 {
+		return util.Date{}, "", 0, false
+	}
+	d, err := strconv.Atoi(parts[offset+2])
+	if err != nil || d < 1 || d > 31 {
+		return util.Date{}, "", 0, false
+	}
+
+	date := util.NewDate(y, time.Month(mo), d)
+
+	// Check for partition format: YYYY/MM/DD/parts/HH-HH/<file>
+	if len(parts) >= offset+6 && parts[offset+3] == "parts" && isHourRangeFormat(parts[offset+4]) {
+		file := parts[offset+5]
+		return date, file, extLabelsHash, true
+	}
+
+	// Daily format: YYYY/MM/DD/<file>
+	file := parts[offset+3]
+	return date, file, extLabelsHash, true
+}
+
+// isHourRangeFormat checks if a string matches the HH-HH partition format.
+// Examples: "00-02", "08-16", "22-24"
+func isHourRangeFormat(s string) bool {
+	if len(s) != 5 || s[2] != '-' {
+		return false
+	}
+	startHour, err := strconv.Atoi(s[:2])
+	if err != nil || startHour < 0 || startHour > 23 {
+		return false
+	}
+	endHour, err := strconv.Atoi(s[3:])
+	if err != nil || endHour < 1 || endHour > 24 {
+		return false
+	}
+	return endHour > startHour
 }
 
 func DayFromBlockName(blk string) (time.Time, error) {
@@ -174,18 +217,73 @@ func BlockNameForDay(d util.Date) string {
 	return fmt.Sprintf(dateFormat, year, int(month), day)
 }
 
-func LabelsPfileNameForShard(extLabelsHash ExternalLabelsHash, date util.Date, shard int) string {
-	return fmt.Sprintf("%s/%s/%d.%s", extLabelsHash.String(), date.String(), shard, "labels.parquet")
-}
-func ChunksPfileNameForShard(extLabelsHash ExternalLabelsHash, date util.Date, shard int) string {
-	return fmt.Sprintf("%s/%s/%d.%s", extLabelsHash.String(), date.String(), shard, "chunks.parquet")
+// BlockNameForPartition returns the block name for a partition.
+func BlockNameForPartition(partition util.Partition) string {
+	return partition.String()
 }
 
-func MetaFileNameForBlock(date util.Date, extLabelsHash ExternalLabelsHash) string {
-	if extLabelsHash == 0 {
-		return path.Join(date.String(), MetaFile)
+// IsPartition returns true if the block name represents a partition block (sub-daily).
+// Partition blocks have the format: YYYY/MM/DD/parts/HH-HH
+// Daily blocks have the format: YYYY/MM/DD
+func IsPartition(name string) bool {
+	parts := strings.Split(name, "/")
+	// Partition format: YYYY/MM/DD/parts/HH-HH (5 parts)
+	// With hash: <hash>/YYYY/MM/DD/parts/HH-HH (6 parts)
+	if len(parts) == 5 && parts[3] == "parts" && isHourRangeFormat(parts[4]) {
+		return true
 	}
-	return path.Join(extLabelsHash.String(), date.String(), MetaFile)
+	if len(parts) == 6 && parts[4] == "parts" && isHourRangeFormat(parts[5]) {
+		return true
+	}
+	return false
+}
+
+// DailyBlockNameForPartition returns the daily block name that would cover the same date.
+// For "2025/12/02/parts/08-10" returns "2025/12/02"
+// For "<hash>/2025/12/02/parts/08-10" returns "<hash>/2025/12/02"
+func DailyBlockNameForPartition(name string) string {
+	parts := strings.Split(name, "/")
+	// Without hash: YYYY/MM/DD/parts/HH-HH -> YYYY/MM/DD
+	if len(parts) == 5 && parts[3] == "parts" {
+		return path.Join(parts[0], parts[1], parts[2])
+	}
+	// With hash: <hash>/YYYY/MM/DD/parts/HH-HH -> <hash>/YYYY/MM/DD
+	if len(parts) == 6 && parts[4] == "parts" {
+		return path.Join(parts[0], parts[1], parts[2], parts[3])
+	}
+	return name
+}
+
+// blockNameFromDateOrPartition returns the appropriate block name for a date or partition.
+func blockNameFromDateOrPartition(date util.Date, partition *util.Partition) string {
+	if partition != nil {
+		return partition.String()
+	}
+	return date.String()
+}
+
+func LabelsPfileNameForShard(extLabelsHash ExternalLabelsHash, date util.Date, partition *util.Partition, shard int) string {
+	blockName := blockNameFromDateOrPartition(date, partition)
+	if extLabelsHash == 0 {
+		return fmt.Sprintf("%s/%d.%s", blockName, shard, "labels.parquet")
+	}
+	return fmt.Sprintf("%s/%s/%d.%s", extLabelsHash.String(), blockName, shard, "labels.parquet")
+}
+
+func ChunksPfileNameForShard(extLabelsHash ExternalLabelsHash, date util.Date, partition *util.Partition, shard int) string {
+	blockName := blockNameFromDateOrPartition(date, partition)
+	if extLabelsHash == 0 {
+		return fmt.Sprintf("%s/%d.%s", blockName, shard, "chunks.parquet")
+	}
+	return fmt.Sprintf("%s/%s/%d.%s", extLabelsHash.String(), blockName, shard, "chunks.parquet")
+}
+
+func MetaFileNameForBlock(date util.Date, partition *util.Partition, extLabelsHash ExternalLabelsHash) string {
+	blockName := blockNameFromDateOrPartition(date, partition)
+	if extLabelsHash == 0 {
+		return path.Join(blockName, MetaFile)
+	}
+	return path.Join(extLabelsHash.String(), blockName, MetaFile)
 }
 
 func StreamDescriptorFileNameForBlock(extLabelsHash ExternalLabelsHash) string {

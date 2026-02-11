@@ -28,7 +28,15 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
+)
+
+const (
+	conversionModeBoth       string = "both"
+	conversionModeHistorical string = "historical"
+	conversionModePartition  string = "partition"
 )
 
 type convertOpts struct {
@@ -41,12 +49,20 @@ type convertOpts struct {
 }
 
 type conversionOpts struct {
-	runInterval   time.Duration
-	runTimeout    time.Duration
-	retryInterval time.Duration
+	mode string
 
+	partitionRunInterval time.Duration
+	partitionRunTimeout  time.Duration
+	partitionMaxSteps    int
+	partitionDuration    time.Duration
+	partitionLookback    time.Duration
+
+	historicalRunInterval time.Duration
+	historicalRunTimeout  time.Duration
+	historicalMaxSteps    int
+
+	retryInterval            time.Duration
 	gracePeriod              time.Duration
-	maxDays                  int
 	recompress               bool
 	sortLabels               []string
 	rowGroupSize             int
@@ -55,8 +71,15 @@ type conversionOpts struct {
 	blockDownloadConcurrency int
 	encodingConcurrency      int
 	writeConcurrency         int
+	tempDir                  string
+}
 
-	tempDir string
+func (opts *conversionOpts) isPartition() bool {
+	return opts.mode == conversionModeBoth || opts.mode == conversionModePartition
+}
+
+func (opts *conversionOpts) isHistorical() bool {
+	return opts.mode == conversionModeBoth || opts.mode == conversionModeHistorical
 }
 
 func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
@@ -69,13 +92,24 @@ func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("convert.run-interval", "interval to run conversion on").Default("1h").DurationVar(&opts.runInterval)
-	cmd.Flag("convert.run-timeout", "timeout for a single conversion step").Default("24h").DurationVar(&opts.runTimeout)
+	cmd.Flag("convert.mode", "conversion mode: 'both' runs historical and partition loops, 'historical' runs only historical daily conversion, 'partition' runs only partition conversion").
+		Default(conversionModeHistorical).
+		EnumVar(&opts.mode, conversionModeBoth, conversionModeHistorical, conversionModePartition)
+
+	cmd.Flag("convert.partition.run-interval", "how often to run partition conversion cycle").Default("30m").DurationVar(&opts.partitionRunInterval)
+	cmd.Flag("convert.partition.run-timeout", "max duration for a single partition conversion cycle").Default("2h").DurationVar(&opts.partitionRunTimeout)
+	cmd.Flag("convert.partition.max-steps", "max partitions to convert per cycle (0 = unlimited)").Default("1").IntVar(&opts.partitionMaxSteps)
+	cmd.Flag("convert.partition.duration", "size of each partition; smaller values mean fresher data but more files (must evenly divide 24h)").Default("2h").DurationVar(&opts.partitionDuration)
+	cmd.Flag("convert.partition.lookback", "time window from now to consider for partition conversion; data older than this is handled by historical conversion").Default("24h").DurationVar(&opts.partitionLookback)
+
+	cmd.Flag("convert.historical.run-interval", "how often to run the historical daily conversion cycle").Default("1h").DurationVar(&opts.historicalRunInterval)
+	cmd.Flag("convert.historical.run-timeout", "max duration for a single historical conversion cycle").Default("24h").DurationVar(&opts.historicalRunTimeout)
+	cmd.Flag("convert.historical.max-steps", "max days to convert per cycle").Default("2").IntVar(&opts.historicalMaxSteps)
+
 	cmd.Flag("convert.retry-interval", "interval to retry a single conversion after an error").Default("1m").DurationVar(&opts.retryInterval)
 	cmd.Flag("convert.tempdir", "directory for temporary state").Default(os.TempDir()).StringVar(&opts.tempDir)
 	cmd.Flag("convert.recompress", "recompress chunks").Default("true").BoolVar(&opts.recompress)
 	cmd.Flag("convert.grace-period", "dont convert for dates younger than this").Default("48h").DurationVar(&opts.gracePeriod)
-	cmd.Flag("convert.max-plan-days", "soft limit for the number of days to plan conversions for").Default("2").IntVar(&opts.maxDays)
 
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
@@ -121,10 +155,13 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 
 	return cmd, func(ctx context.Context, log *slog.Logger, reg *prometheus.Registry) error {
 		var g run.Group
+		var partitionTsdbDiscoverer, histTsdbDiscoverer *locate.TSDBDiscoverer
+		var partitionParquetDiscoverer, histParquetDiscoverer *locate.Discoverer
 
 		setupInterrupt(ctx, &g, log)
 		setupInternalAPI(&g, log, reg, opts.internalAPI)
 
+		// init buckets
 		tsdbBkt, err := setupBucket(log, opts.tsdbBucket)
 		if err != nil {
 			return fmt.Errorf("unable to setup tsdb bucket: %s", err)
@@ -134,47 +171,172 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 			return fmt.Errorf("unable to setup parquet bucket: %s", err)
 		}
 
-		tsdbDiscoverer, err := setupTSDBDiscovery(ctx, &g, log, tsdbBkt, opts.tsdbDiscover)
-		if err != nil {
-			return fmt.Errorf("unable to setup tsdb discovery: %s", err)
+		// init discoverers (separate for each loop to avoid concurrent map access)
+		if opts.conversion.isPartition() {
+			partitionTsdbDiscoverer, partitionParquetDiscoverer = newDiscoverers(tsdbBkt, parquetBkt, log, opts.tsdbDiscover, opts.parquetDiscover)
 		}
-		parquetDiscoverer, err := setupDiscovery(ctx, &g, log, parquetBkt, opts.parquetDiscover)
-		if err != nil {
-			return fmt.Errorf("unable to setup parquet discovery: %s", err)
+		if opts.conversion.isHistorical() {
+			histTsdbDiscoverer, histParquetDiscoverer = newDiscoverers(tsdbBkt, parquetBkt, log, opts.tsdbDiscover, opts.parquetDiscover)
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		g.Add(func() error {
-			log.Info("Starting conversion", "sort_by", opts.conversion.sortLabels)
-			return runutil.Repeat(opts.conversion.runInterval, ctx.Done(), func() error {
-				iterCtx, iterCancel := context.WithTimeout(ctx, opts.conversion.runTimeout)
-				defer iterCancel()
+		defer cancel()
 
-				if err := runutil.Retry(opts.conversion.retryInterval, iterCtx.Done(), func() error {
-					// Sync parquet files once here so we have the latest view
-					log.Info("Discovering parquet blocks before conversion")
-					if err := parquetDiscoverer.Discover(iterCtx); err != nil {
-						log.Error("Unable to discover parquet blocks", "error", err)
-						return err
-					}
-					log.Info("Converting next blocks", "sort_by", opts.conversion.sortLabels)
-					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion); err != nil {
-						log.Error("Unable to convert blocks", "error", err)
-						return err
-					}
-					return nil
-				}); err != nil {
-					log.Warn("Error during conversion", slog.Any("err", err))
-					return nil
-				}
-				return nil
+		if opts.conversion.isPartition() {
+			g.Add(func() error {
+				return runPartitionLoop(ctx, log, tsdbBkt, parquetBkt,
+					partitionTsdbDiscoverer, partitionParquetDiscoverer,
+					opts.conversion)
+			}, func(error) {
+				log.With(slog.String("mode", conversionModePartition)).Info("Stopping conversion")
+				cancel()
 			})
-		}, func(error) {
-			log.Info("Stopping conversion")
-			cancel()
-		})
+		}
+
+		if opts.conversion.isHistorical() {
+			g.Add(func() error {
+				return runHistoricalLoop(ctx, log, tsdbBkt, parquetBkt,
+					histTsdbDiscoverer, histParquetDiscoverer,
+					opts.conversion)
+			}, func(error) {
+				log.With(slog.String("mode", conversionModeHistorical)).Info("Stopping conversion")
+				cancel()
+			})
+		}
+
 		return g.Run()
 	}
+}
+
+// newDiscoverers creates a pair of discoverers for TSDB and parquet.
+func newDiscoverers(
+	tsdbBkt, parquetBkt objstore.Bucket,
+	log *slog.Logger,
+	tsdbOpts tsdbDiscoveryOpts,
+	parquetOpts discoveryOpts,
+) (*locate.TSDBDiscoverer, *locate.Discoverer) {
+	tsdbDiscoverer := locate.NewTSDBDiscoverer(
+		tsdbBkt,
+		locate.TSDBMetaConcurrency(tsdbOpts.discoveryConcurrency),
+		locate.TSDBMinBlockAge(tsdbOpts.discoveryMinBlockAge),
+		locate.TSDBMatchExternalLabels(tsdbOpts.externalLabelMatchers...),
+		locate.WithLogger(log),
+	)
+	parquetDiscoverer := locate.NewDiscoverer(
+		parquetBkt,
+		locate.MetaConcurrency(parquetOpts.discoveryConcurrency),
+		locate.Logger(log),
+	)
+	return tsdbDiscoverer, parquetDiscoverer
+}
+
+// runPartitionLoop runs the partition conversion loop.
+func runPartitionLoop(
+	ctx context.Context,
+	log *slog.Logger,
+	tsdbBkt, parquetBkt objstore.Bucket,
+	tsdbDiscoverer *locate.TSDBDiscoverer,
+	parquetDiscoverer *locate.Discoverer,
+	opts conversionOpts,
+) error {
+	l := log.With(slog.String("mode", conversionModePartition))
+	l.Info("Starting conversion loop", slog.String("interval", opts.partitionRunInterval.String()))
+
+	return runutil.Repeat(opts.partitionRunInterval, ctx.Done(), func() error {
+		iterCtx, iterCancel := context.WithTimeout(ctx, opts.partitionRunTimeout)
+		defer iterCancel()
+
+		if err := runutil.Retry(opts.retryInterval, iterCtx.Done(), func() error {
+			tsdbMetas, parquetMetas, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
+			if err != nil {
+				l.Error("Discovery failed, skipping conversion cycle", slog.Any("error", err))
+				return nil // skip cycle on discovery failure
+			}
+
+			notAfter := time.Now().Add(-opts.gracePeriod)
+			planner := convert.NewPlannerWithPartitions(notAfter, 1, opts.partitionDuration, opts.partitionMaxSteps, opts.partitionLookback)
+			plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+
+			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetMetas, opts, conversionModePartition, false); err != nil {
+				l.Error("Unable to convert", "error", err)
+				return err
+			}
+			return nil
+		}); err != nil {
+			l.Warn("Error during conversion", slog.Any("err", err))
+			return nil
+		}
+		return nil
+	})
+}
+
+// runHistoricalLoop runs the historical conversion loop.
+func runHistoricalLoop(
+	ctx context.Context,
+	log *slog.Logger,
+	tsdbBkt, parquetBkt objstore.Bucket,
+	tsdbDiscoverer *locate.TSDBDiscoverer,
+	parquetDiscoverer *locate.Discoverer,
+	opts conversionOpts,
+) error {
+	l := log.With(slog.String("mode", conversionModeHistorical))
+	l.Info("Starting conversion loop", slog.String("interval", opts.historicalRunInterval.String()))
+
+	return runutil.Repeat(opts.historicalRunInterval, ctx.Done(), func() error {
+		iterCtx, iterCancel := context.WithTimeout(ctx, opts.historicalRunTimeout)
+		defer iterCancel()
+
+		if err := runutil.Retry(opts.retryInterval, iterCtx.Done(), func() error {
+			tsdbMetas, parquetMetas, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
+			if err != nil {
+				l.Error("Discovery failed, skipping conversion cycle", slog.Any("error", err))
+				return nil // skip cycle on discovery failure
+			}
+
+			notAfter := time.Now().Add(-opts.gracePeriod)
+			planner := convert.NewPlannerWithPartitions(notAfter, opts.historicalMaxSteps, opts.partitionDuration, 0, opts.partitionLookback)
+			plan := planner.PlanHistorical(tsdbMetas, parquetMetas)
+
+			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetMetas, opts, conversionModeHistorical, true); err != nil {
+				l.Error("Unable to convert", "error", err)
+				return err
+			}
+			return nil
+		}); err != nil {
+			l.Warn("Error during conversion", slog.Any("err", err))
+			return nil
+		}
+		return nil
+	})
+}
+
+// runDiscovery runs TSDB and parquet discovery in parallel.
+func runDiscovery(
+	ctx context.Context,
+	log *slog.Logger,
+	tsdbDiscoverer *locate.TSDBDiscoverer,
+	parquetDiscoverer *locate.Discoverer,
+) (map[string]metadata.Meta, map[string]schema.Meta, error) {
+	dg, dCtx := errgroup.WithContext(ctx)
+	dg.Go(func() error {
+		log.Debug("Running TSDB discovery")
+		if err := tsdbDiscoverer.Discover(dCtx); err != nil {
+			return fmt.Errorf("TSDB discovery failed: %w", err)
+		}
+		return nil
+	})
+	dg.Go(func() error {
+		log.Debug("Running parquet discovery")
+		if err := parquetDiscoverer.Discover(dCtx); err != nil {
+			return fmt.Errorf("parquet discovery failed: %w", err)
+		}
+		return nil
+	})
+	if err := dg.Wait(); err != nil {
+		log.Warn("Discovery failed, skipping cycle to prevent incorrect data", "error", err)
+		return nil, nil, err
+	}
+	return tsdbDiscoverer.Metas(), parquetDiscoverer.Metas(), nil
 }
 
 func advanceConversion(
@@ -182,12 +344,14 @@ func advanceConversion(
 	log *slog.Logger,
 	tsdbBkt objstore.Bucket,
 	parquetBkt objstore.Bucket,
-	tsdbDiscoverer *locate.TSDBDiscoverer,
-	parquetDiscoverer *locate.Discoverer,
+	plan convert.Plan,
+	parquetMetas map[string]schema.Meta,
 	opts conversionOpts,
+	tempDirSuffix string,
+	cleanupStale bool,
 ) error {
-	blkDir := filepath.Join(opts.tempDir, ".blocks")
-	bufferDir := filepath.Join(opts.tempDir, ".buffers")
+	blkDir := filepath.Join(opts.tempDir, ".blocks-"+tempDirSuffix)
+	bufferDir := filepath.Join(opts.tempDir, ".buffers-"+tempDirSuffix)
 
 	log.Info("Cleaning up previous state", "block_directory", blkDir, "buffer_directory", bufferDir)
 	if err := cleanupDirectory(blkDir); err != nil {
@@ -197,31 +361,32 @@ func advanceConversion(
 		return fmt.Errorf("unable to clean up buffer directory: %w", err)
 	}
 
-	parquetStreams := parquetDiscoverer.Streams()
-	tsdbMetas := tsdbDiscoverer.Streams()
-
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
 	}
-	log.Info("Planned dates to convert", slog.Int("days", len(plan.Steps)))
+
+	log.Info("Planned steps to convert", slog.Int("steps", len(plan.Steps)))
 	for _, step := range plan.Steps {
-		log.Info("Plan step", slog.String("date", step.Date.String()), slog.Any("ulids", ulidsFromMetas(step.Sources)))
+		attrs := []any{
+			slog.String("date", step.Date.String()),
+			slog.Any("ulids", ulidsFromMetas(step.Sources)),
+		}
+		if step.Partition != nil {
+			attrs = append(attrs, slog.String("partition", step.Partition.String()))
+		}
+		log.Info("Plan step", attrs...)
 	}
 
-	log.Info("Starting plan conversions")
-	var (
-		stepBlocks, prevBlocks []convert.Convertible
-		err                    error
-	)
-	// Process each step (day) one by one, keeping blocks shared between steps on disk.
+	log.Info("Starting conversions")
+	var stepBlocks, prevBlocks []convert.Convertible
+	var err error
 	for _, step := range plan.Steps {
 		// Close blocks that were open in the previous step but are no longer needed.
 		prevBlocks = closeUnused(log, step.Sources, prevBlocks)
 
 		ulids := ulidsFromMetas(step.Sources)
-		log.Info("Converting date", slog.String("date", step.Date.String()), slog.Any("ulids", ulids))
+		log.Info("Converting", slog.String("step", step.String()), slog.Any("ulids", ulids))
 
 		toDownload := blocksToDownload(step.Sources, prevBlocks)
 		log.Info("Blocks from previous step", slog.Any("ulids", ulidsFromConvertible(prevBlocks)))
@@ -249,7 +414,7 @@ func advanceConversion(
 			)
 		}
 
-		log.Info("Starting conversion", slog.String("date", step.Date.String()))
+		log.Info("Starting conversion", slog.String("step", step.String()))
 		convOpts := []convert.ConvertOption{
 			convert.SortBy(opts.sortLabels...),
 			convert.RowGroupSize(opts.rowGroupSize),
@@ -258,21 +423,23 @@ func advanceConversion(
 			convert.WriteConcurrency(opts.writeConcurrency),
 			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
 		}
-		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, step.ExternalLabels.Hash(), stepBlocks, convOpts...); err != nil {
+		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, step.Partition, step.ExternalLabels.Hash(), stepBlocks, convOpts...); err != nil {
 			closeBlocks(log, stepBlocks...)
-			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
+			return fmt.Errorf("unable to convert blocks for %q: %s", step.String(), err)
 		}
 		if err := convert.WriteStreamFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to write stream file: %w", err)
 		}
-		log.Info("Conversion completed", slog.String("date", step.Date.String()))
+		log.Info("Conversion completed", slog.String("step", step.String()))
 
 		prevBlocks = stepBlocks
 	}
 	log.Info("Plan completed")
 
-	// Close all open blocks.
+	if cleanupStale {
+		cleanupStalePartitions(ctx, log, parquetBkt, parquetMetas)
+	}
 	closeBlocks(log, prevBlocks...)
 	return nil
 }
@@ -458,4 +625,84 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 		return fmt.Errorf("unable to download directory: %w", err)
 	}
 	return nil
+}
+
+// cleanupPartitionsForDay removes all partition files under the parts/ directory for a given day.
+func cleanupPartitionsForDay(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, day util.Date) {
+	// get correct path format (YYYY/MM/DD)
+	dayPath := schema.BlockNameForDay(day)
+	partsDir := dayPath + "/parts/"
+
+	deleted := 0
+	err := bkt.Iter(ctx, partsDir, func(name string) error {
+		if err := bkt.Delete(ctx, name); err != nil {
+			log.Warn("Failed to delete partition file", "file", name, "error", err)
+		} else {
+			deleted++
+		}
+		return nil
+	}, objstore.WithRecursiveIter())
+	if err != nil {
+		log.Warn("Failed to iterate partition files", "dir", partsDir, "error", err)
+		return
+	}
+	if deleted > 0 {
+		log.Info("Cleaned up partitions", "day", dayPath, "files", deleted)
+	}
+}
+
+// cleanupStalePartitions scans the bucket for partitions that have a corresponding daily block
+// and deletes them. Only cleans partitions for days before yesterday to ensure serve component
+// has had sufficient time to discover the daily block.
+func cleanupStalePartitions(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, parquetMetas map[string]schema.Meta) {
+	// Only clean partitions for days before yesterday.
+	// This ensures at least 24-48 hours pass after daily block creation
+	yesterday := time.Now().UTC().Truncate(24 * time.Hour).Add(-24 * time.Hour)
+
+	// Find daily blocks that are old enough
+	dailyBlocks := make(map[string]struct{})
+	for name, meta := range parquetMetas {
+		if schema.IsPartition(name) {
+			continue
+		}
+		blockDay := time.UnixMilli(meta.Mint).UTC().Truncate(24 * time.Hour)
+		if blockDay.Before(yesterday) {
+			dailyBlocks[name] = struct{}{}
+		}
+	}
+
+	if len(dailyBlocks) == 0 {
+		return
+	}
+
+	// Find partitions that should be cleaned up
+	cleaned := make(map[string]struct{}) // track cleaned days to avoid duplicates
+	for name := range parquetMetas {
+		if ctx.Err() != nil {
+			return
+		}
+		if !schema.IsPartition(name) {
+			continue
+		}
+
+		dailyName := schema.DailyBlockNameForPartition(name)
+		if _, alreadyCleaned := cleaned[dailyName]; alreadyCleaned {
+			continue
+		}
+		if _, hasDailyBlock := dailyBlocks[dailyName]; !hasDailyBlock {
+			continue
+		}
+
+		day, err := util.DateFromString(dailyName)
+		if err != nil {
+			log.Warn("Failed to parse day from partition", "partition", name, "error", err)
+			continue
+		}
+
+		log.Info("Cleaning up stale partitions for day with existing daily block",
+			slog.String("day", day.String()),
+			slog.String("daily_block", dailyName))
+		cleanupPartitionsForDay(ctx, log, bkt, day)
+		cleaned[dailyName] = struct{}{}
+	}
 }

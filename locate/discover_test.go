@@ -79,7 +79,7 @@ func TestDiscoverer(t *testing.T) {
 	})
 
 	t.Run("does not detect blocks with no meta.pb", func(t *testing.T) {
-		require.NoError(t, bkt.Delete(ctx, path.Join(extLabels.Hash().String(), "1970-01-01", "meta.pb")))
+		require.NoError(t, bkt.Delete(ctx, path.Join(extLabels.Hash().String(), "1970/01/01", "meta.pb")))
 		require.NoError(t, discoverer.Discover(ctx))
 
 		metas := discoverer.Streams()
@@ -109,9 +109,9 @@ func TestDiscoverer(t *testing.T) {
 	})
 
 	t.Run("detects streams with no external labels (old format)", func(t *testing.T) {
-		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970-01-02", "meta.pb"), path.Join("1970-01-02", "meta.pb"))
-		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970-01-02", "0.chunks.parquet"), path.Join("1970-01-02", "0.chunks.parquet"))
-		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970-01-02", "0.labels.parquet"), path.Join("1970-01-02", "0.labels.parquet"))
+		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970/01/02", "meta.pb"), path.Join("1970/01/02", "meta.pb"))
+		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970/01/02", "0.chunks.parquet"), path.Join("1970/01/02", "0.chunks.parquet"))
+		moveObject(t, bkt, path.Join(extLabels.Hash().String(), "1970/01/02", "0.labels.parquet"), path.Join("1970/01/02", "0.labels.parquet"))
 
 		require.NoError(t, discoverer.Discover(ctx))
 
@@ -206,7 +206,7 @@ func TestTSDBDiscoverer(t *testing.T) {
 		}
 
 		streams := discoverer.Streams()
-		require.Equal(t, len(streams), 1)
+		require.Equal(tt, len(streams), 1)
 
 		notBarMetas := streams[schema.ExternalLabels{"foo": "not-bar"}.Hash()].Metas
 
@@ -282,8 +282,8 @@ func TestTSDBDiscoverer(t *testing.T) {
 
 		streams := discoverer.Streams()
 		metas := streams[0].Metas
-		require.Equal(t, 1, len(metas))
-		require.Equal(t, `01JS0DPYGA1HPW5RBZ1KBXCNXK`, metas[0].ULID.String())
+		require.Equal(tt, 1, len(metas))
+		require.Equal(tt, `01JS0DPYGA1HPW5RBZ1KBXCNXK`, metas[0].ULID.String())
 
 		// delete the block
 		if err := bkt.Delete(ctx, meta.ULID.String()); err != nil {
@@ -310,7 +310,7 @@ func createBlockForDate(ctx context.Context, t *testing.T, bkt objstore.Bucket, 
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
 
-	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: st.Head()}}))
+	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, nil, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: st.Head()}}))
 
 	streamDescriptor := &streampb.StreamDescriptor{
 		ExternalLabels: extLabels,
@@ -319,3 +319,11 @@ func createBlockForDate(ctx context.Context, t *testing.T, bkt objstore.Bucket, 
 	require.NoError(t, err)
 	require.NoError(t, bkt.Upload(ctx, path.Join(extLabels.Hash().String(), "stream.pb"), bytes.NewReader(buf)))
 }
+
+// NOTE: Partition block discovery is not supported in the current upstream architecture.
+// The upstream Discoverer groups blocks by date (map[Date][]files), which doesn't support
+// multiple blocks for the same date (partitions). The internal fork restructured this to
+// use block names as keys instead.
+//
+// Partition support is available at the db.Querier level through filterOverlappingPartitions()
+// which filters out partition blocks when a daily block exists for the same date.
