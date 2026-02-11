@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/alecthomas/units"
 	"github.com/oklog/run"
@@ -126,6 +127,9 @@ func setupTracing(ctx context.Context, opts tracingOpts) error {
 		if err != nil {
 			return err
 		}
+	case "":
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		return nil
 	default:
 		return fmt.Errorf("invalid exporter type %s", opts.exporterType)
 	}

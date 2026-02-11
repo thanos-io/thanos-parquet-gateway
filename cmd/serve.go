@@ -70,7 +70,7 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("STDOUT").EnumVar(&opts.exporterType, "JAEGER", "STDOUT")
+	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("").EnumVar(&opts.exporterType, "JAEGER", "STDOUT", "")
 	cmd.Flag("tracing.jaeger.endpoint", "endpoint to send traces, eg. https://example.com:4318/v1/traces").StringVar(&opts.jaegerEndpoint)
 	cmd.Flag("tracing.sampling.param", "sample of traces to send").Default("0.1").Float64Var(&opts.samplingParam)
 	cmd.Flag("tracing.sampling.type", "type of sampling").Default("PROBABILISTIC").EnumVar(&opts.samplingType, "PROBABILISTIC", "ALWAYS", "NEVER")
