@@ -69,14 +69,38 @@ func ColumnToLabelName(col string) string {
 	return strings.TrimPrefix(col, LabelColumnPrefix)
 }
 
-func ChunkColumnIndex(m Meta, t time.Time) (int, bool) {
-	mints := time.UnixMilli(m.Mint)
+// ChunkColumnIndexForMint returns the chunk column index for a minimum timestamp.
+// Use absolute UTC hour to determine chunk column, matching the write side in convert/chunks.go.
+func ChunkColumnIndexForMint(t time.Time) (int, bool) {
+	hour := t.UTC().Hour()
+	colIdx := (hour / int(ChunkColumnLength.Hours())) % ChunkColumnsPerDay
+	return colIdx, true
+}
 
-	colIdx := 0
-	for cur := mints.Add(ChunkColumnLength); !t.Before(cur); cur = cur.Add(ChunkColumnLength) {
-		colIdx++
+// ChunkColumnIndexForMaxt returns the chunk column index for a maximum timestamp.
+// For max timestamps, we need special handling: if the time is exactly at a chunk boundary
+// (e.g., 00:00, 08:00, 16:00), data up to that point is in the previous chunk.
+// For example, query_maxt=00:00 should include chunk_2 (16:00-24:00), not chunk_0.
+func ChunkColumnIndexForMaxt(t time.Time) (int, bool) {
+	utc := t.UTC()
+	hour := utc.Hour()
+	minute := utc.Minute()
+	second := utc.Second()
+	nano := utc.Nanosecond()
+
+	// If exactly at a chunk boundary, use the previous chunk
+	// (since maxt is exclusive, 00:00 means "up to but not including 00:00")
+	if minute == 0 && second == 0 && nano == 0 && hour%int(ChunkColumnLength.Hours()) == 0 {
+		if hour == 0 {
+			// Midnight: data up to 00:00 is in chunk_2 (16:00-24:00 of previous day)
+			return ChunkColumnsPerDay - 1, true
+		}
+		// Otherwise, previous chunk
+		hour = hour - 1
 	}
-	return min(colIdx, ChunkColumnsPerDay-1), true
+
+	colIdx := (hour / int(ChunkColumnLength.Hours())) % ChunkColumnsPerDay
+	return colIdx, true
 }
 
 func BuildSchemaFromLabels(lbls []string) *parquet.Schema {

@@ -166,6 +166,7 @@ func registerServeApp(app *kingpin.Application) (*kingpin.CmdClause, func(contex
 
 		db := cfdb.NewDB(
 			syncer,
+			log,
 			cfdb.ExternalLabels(labels.FromMap(opts.query.externalLabels)),
 		)
 

@@ -70,7 +70,7 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, nil, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -91,11 +91,11 @@ func TestConverter(t *testing.T) {
 
 	totalRows := int64(0)
 	for i := range int(meta.Shards) {
-		lf, err := loadParquetFile(t, bkt, schema.LabelsPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, i))
+		lf, err := loadParquetFile(t, bkt, schema.LabelsPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, nil, i))
 		if err != nil {
 			t.Fatalf("unable to load label parquet file for shard %d: %s", i, err)
 		}
-		cf, err := loadParquetFile(t, bkt, schema.ChunksPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, i))
+		cf, err := loadParquetFile(t, bkt, schema.ChunksPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, nil, i))
 		if err != nil {
 			t.Fatalf("unable to load chunk parquet file for shard %d: %s", i, err)
 		}
@@ -163,7 +163,7 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 		SortBy(labels.MetricName),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, nil, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }
