@@ -28,7 +28,7 @@ func TestCleanupStalePartitions(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		metas            map[string]schema.Meta
+		streams          map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 		partitionFiles   []string // files to create in bucket
 		expectDeleted    []string // partition dirs that should be empty after cleanup
 		expectExists     []string // files that should still exist after cleanup
@@ -37,9 +37,11 @@ func TestCleanupStalePartitions(t *testing.T) {
 	}{
 		{
 			name: "no daily blocks - no cleanup",
-			metas: map[string]schema.Meta{
-				"2025/01/15/parts/00-02": makePartitionMeta("2025/01/15/parts/00-02", threeDaysAgo),
-				"2025/01/15/parts/02-04": makePartitionMeta("2025/01/15/parts/02-04", threeDaysAgo),
+			streams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				0: {Metas: []schema.Meta{
+					makePartitionMeta("2025/01/15/parts/00-02", threeDaysAgo),
+					makePartitionMeta("2025/01/15/parts/02-04", threeDaysAgo),
+				}},
 			},
 			partitionFiles: []string{
 				"2025/01/15/parts/00-02/0.labels.parquet",
@@ -52,12 +54,14 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "daily block for today - no cleanup",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				todayStr := today.Format("2006/01/02")
-				return map[string]schema.Meta{
-					todayStr:                  makeDailyMeta(todayStr, today),
-					todayStr + "/parts/00-02": makePartitionMeta(todayStr+"/parts/00-02", today),
-					todayStr + "/parts/02-04": makePartitionMeta(todayStr+"/parts/02-04", today),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(todayStr, today),
+						makePartitionMeta(todayStr+"/parts/00-02", today),
+						makePartitionMeta(todayStr+"/parts/02-04", today),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -77,12 +81,14 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "daily block for yesterday - no cleanup",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				yesterdayStr := yesterday.Format("2006/01/02")
-				return map[string]schema.Meta{
-					yesterdayStr:                  makeDailyMeta(yesterdayStr, yesterday),
-					yesterdayStr + "/parts/00-02": makePartitionMeta(yesterdayStr+"/parts/00-02", yesterday),
-					yesterdayStr + "/parts/02-04": makePartitionMeta(yesterdayStr+"/parts/02-04", yesterday),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(yesterdayStr, yesterday),
+						makePartitionMeta(yesterdayStr+"/parts/00-02", yesterday),
+						makePartitionMeta(yesterdayStr+"/parts/02-04", yesterday),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -102,12 +108,14 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "daily block for two days ago - cleanup happens",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				twoDaysAgoStr := twoDaysAgo.Format("2006/01/02")
-				return map[string]schema.Meta{
-					twoDaysAgoStr:                  makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
-					twoDaysAgoStr + "/parts/00-02": makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
-					twoDaysAgoStr + "/parts/02-04": makePartitionMeta(twoDaysAgoStr+"/parts/02-04", twoDaysAgo),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
+						makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
+						makePartitionMeta(twoDaysAgoStr+"/parts/02-04", twoDaysAgo),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -124,15 +132,17 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "multiple days with stale partitions - all get cleaned",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				twoDaysAgoStr := twoDaysAgo.Format("2006/01/02")
 				threeDaysAgoStr := threeDaysAgo.Format("2006/01/02")
-				return map[string]schema.Meta{
-					twoDaysAgoStr:                    makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
-					twoDaysAgoStr + "/parts/00-02":   makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
-					threeDaysAgoStr:                  makeDailyMeta(threeDaysAgoStr, threeDaysAgo),
-					threeDaysAgoStr + "/parts/00-02": makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
-					threeDaysAgoStr + "/parts/02-04": makePartitionMeta(threeDaysAgoStr+"/parts/02-04", threeDaysAgo),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
+						makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
+						makeDailyMeta(threeDaysAgoStr, threeDaysAgo),
+						makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
+						makePartitionMeta(threeDaysAgoStr+"/parts/02-04", threeDaysAgo),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -155,13 +165,15 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "partitions without corresponding daily block - no cleanup",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				twoDaysAgoStr := twoDaysAgo.Format("2006/01/02")
 				threeDaysAgoStr := threeDaysAgo.Format("2006/01/02")
-				return map[string]schema.Meta{
-					twoDaysAgoStr:                    makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
-					threeDaysAgoStr + "/parts/00-02": makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
-					threeDaysAgoStr + "/parts/02-04": makePartitionMeta(threeDaysAgoStr+"/parts/02-04", threeDaysAgo),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
+						makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
+						makePartitionMeta(threeDaysAgoStr+"/parts/02-04", threeDaysAgo),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -181,14 +193,16 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "context cancellation stops cleanup",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				twoDaysAgoStr := twoDaysAgo.Format("2006/01/02")
 				threeDaysAgoStr := threeDaysAgo.Format("2006/01/02")
-				return map[string]schema.Meta{
-					twoDaysAgoStr:                    makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
-					twoDaysAgoStr + "/parts/00-02":   makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
-					threeDaysAgoStr:                  makeDailyMeta(threeDaysAgoStr, threeDaysAgo),
-					threeDaysAgoStr + "/parts/00-02": makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
+						makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
+						makeDailyMeta(threeDaysAgoStr, threeDaysAgo),
+						makePartitionMeta(threeDaysAgoStr+"/parts/00-02", threeDaysAgo),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -204,14 +218,16 @@ func TestCleanupStalePartitions(t *testing.T) {
 		},
 		{
 			name: "mixed recent and stale days - only stale cleaned",
-			metas: func() map[string]schema.Meta {
+			streams: func() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
 				yesterdayStr := yesterday.Format("2006/01/02")
 				twoDaysAgoStr := twoDaysAgo.Format("2006/01/02")
-				return map[string]schema.Meta{
-					yesterdayStr:                   makeDailyMeta(yesterdayStr, yesterday),
-					yesterdayStr + "/parts/00-02":  makePartitionMeta(yesterdayStr+"/parts/00-02", yesterday),
-					twoDaysAgoStr:                  makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
-					twoDaysAgoStr + "/parts/00-02": makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
+				return map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+					0: {Metas: []schema.Meta{
+						makeDailyMeta(yesterdayStr, yesterday),
+						makePartitionMeta(yesterdayStr+"/parts/00-02", yesterday),
+						makeDailyMeta(twoDaysAgoStr, twoDaysAgo),
+						makePartitionMeta(twoDaysAgoStr+"/parts/00-02", twoDaysAgo),
+					}},
 				}
 			}(),
 			partitionFiles: func() []string {
@@ -255,7 +271,7 @@ func TestCleanupStalePartitions(t *testing.T) {
 				ctx, cancel = context.WithCancel(ctx)
 				cancel()
 			}
-			cleanupStalePartitions(ctx, testLogger, bkt, tc.metas)
+			cleanupStalePartitions(ctx, testLogger, bkt, tc.streams)
 
 			// Check files that should exist
 			for _, f := range tc.expectExists {
@@ -358,7 +374,7 @@ func TestCleanupPartitionsForDay(t *testing.T) {
 				}
 			}
 
-			cleanupPartitionsForDay(t.Context(), testLogger, bkt, tc.day)
+			cleanupPartitionsForDay(t.Context(), testLogger, bkt, tc.day, 0)
 
 			// Check files that should exist
 			for _, f := range tc.expectExists {

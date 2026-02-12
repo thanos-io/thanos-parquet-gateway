@@ -638,16 +638,20 @@ func TestPlanner(t *testing.T) {
 	}
 }
 
-func TestPlanDaily(t *testing.T) {
-	// Tests for planDaily behavior
+func TestPlanHistorical_Daily(t *testing.T) {
+	// Tests for PlanHistorical behavior with stream inputs
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
 
 	for _, tc := range []struct {
 		name string
 
 		notAfter           time.Time
 		historicalMaxSteps int
-		tsdbMetas          map[string]metadata.Meta
-		parquetMetas       map[string]schema.Meta
+		tsdbStreams        map[schema.ExternalLabelsHash]schema.TSDBBlocksStream
+		parquetStreams     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 
 		expectedPlan Plan
 	}{
@@ -655,20 +659,26 @@ func TestPlanDaily(t *testing.T) {
 			name:               "partial day is truncated for daily blocks",
 			notAfter:           time.UnixMilli(math.MaxInt64),
 			historicalMaxSteps: 7,
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
-						MinTime: time.Date(2025, time.March, 2, 11, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.March, 3, 5, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+							MinTime: time.Date(2025, time.March, 2, 11, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.March, 3, 5, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				"2025/03/02": {
-					Name: "2025/03/02",
-					Mint: time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.March, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name: "2025/03/02",
+						Mint: time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt: time.Date(2025, time.March, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			// Partial day 03/03 is truncated for daily blocks (use partitions for partial days)
@@ -678,36 +688,45 @@ func TestPlanDaily(t *testing.T) {
 			name:               "we dont convert blocks that are too young still",
 			notAfter:           time.Date(2025, time.March, 1, 0, 0, 0, 0, time.UTC),
 			historicalMaxSteps: 7,
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
-						MinTime: time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.March, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+							MinTime: time.Date(2025, time.March, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.March, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{},
-			expectedPlan: Plan{Steps: []Step{}},
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
+			expectedPlan:   Plan{Steps: []Step{}},
 		},
 		{
 			name:               "tsdb block covering full day and a partial parquet block for it",
 			notAfter:           time.UnixMilli(math.MaxInt64),
 			historicalMaxSteps: 7,
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXZ": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXZ"),
-						MinTime: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXZ"),
+							MinTime: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				"2020/01/23": {
-					Name: "2020/01/23",
-					Mint: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2020, time.January, 23, 12, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name: "2020/01/23",
+						Mint: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt: time.Date(2020, time.January, 23, 12, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			// If we have a full day of tsdb data and a parquet block for that day that covers only
@@ -718,27 +737,35 @@ func TestPlanDaily(t *testing.T) {
 			name:               "converted block followed by a partial day block",
 			notAfter:           time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC),
 			historicalMaxSteps: 7,
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXZ": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXZ"),
-						MinTime: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXK": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
-						MinTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 24, 4, 0, 0, 0, time.UTC).UnixMilli(),
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXZ"),
+								MinTime: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+								MinTime: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2020, time.January, 24, 4, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
 					},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				"2020/01/23": {
-					Name: "2020/01/23",
-					Mint: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name: "2020/01/23",
+						Mint: time.Date(2020, time.January, 23, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt: time.Date(2020, time.January, 24, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			expectedPlan: Plan{Steps: []Step{}}, // 01/24 is excluded by notAfter
@@ -747,53 +774,63 @@ func TestPlanDaily(t *testing.T) {
 			name:               "historicalMaxSteps limits output",
 			notAfter:           time.UnixMilli(math.MaxInt64),
 			historicalMaxSteps: 3,
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-						MinTime: time.Date(2020, time.January, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXC": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
-						MinTime: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2020, time.January, 7, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+								MinTime: time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2020, time.January, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+								MinTime: time.Date(2020, time.January, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+								MinTime: time.Date(2020, time.January, 5, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2020, time.January, 7, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
 					},
 				},
 			},
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedPlan: Plan{
 				Steps: []Step{
 					{
-						Date:    util.NewDate(2020, time.January, 6),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						Date:           util.NewDate(2020, time.January, 6),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						ExternalLabels: defaultExternalLabels,
 					},
 					{
-						Date:    util.NewDate(2020, time.January, 5),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						Date:           util.NewDate(2020, time.January, 5),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						ExternalLabels: defaultExternalLabels,
 					},
 					{
-						Date:    util.NewDate(2020, time.January, 4),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						Date:           util.NewDate(2020, time.January, 4),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						ExternalLabels: defaultExternalLabels,
 					},
 					{
-						Date:    util.NewDate(2020, time.January, 3),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						Date:           util.NewDate(2020, time.January, 3),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						ExternalLabels: defaultExternalLabels,
 					},
 				},
 			},
 		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlannerWithPartitions(tc.notAfter, tc.historicalMaxSteps, 2*time.Hour, 0, DefaultPartitionLookback).planDaily(tc.tsdbMetas, tc.parquetMetas)
+			plan := NewPlannerWithPartitions(tc.notAfter, tc.historicalMaxSteps, 2*time.Hour, 0, DefaultPartitionLookback).PlanHistorical(tc.tsdbStreams, tc.parquetStreams)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
@@ -813,83 +850,106 @@ func TestPlanPartitions(t *testing.T) {
 
 	notAfter := time.Date(2025, time.January, 19, 10, 0, 0, 0, time.UTC) // partitions ending before 10:00 are ready
 
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
 	for _, tc := range []struct {
 		name                   string
-		tsdbMetas              map[string]metadata.Meta
-		parquetMetas           map[string]schema.Meta
+		tsdbStreams            map[schema.ExternalLabelsHash]schema.TSDBBlocksStream
+		parquetStreams         map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 		expectedPartitionCount int
 	}{
 		{
 			name: "block entirely in today - included",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas:           map[string]schema.Meta{},
+			parquetStreams:         map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedPartitionCount: 3, // 00-02, 02-04, 04-06
 		},
 		{
 			name: "block spanning midnight - included (touches today and yesterday)",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 18, 22, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 19, 4, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 18, 22, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 19, 4, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas:           map[string]schema.Meta{},
+			parquetStreams:         map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedPartitionCount: 3, // yesterday 22-24, today 00-02, 02-04
 		},
 		{
 			name: "block with existing daily block - NOT included",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				// Daily block exists for Jan 17 - no partitions should be created
-				"2025/01/17": {
-					Name: "2025/01/17",
-					Mint: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name: "2025/01/17",
+						Mint: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			expectedPartitionCount: 0,
 		},
 		{
 			name:                   "empty inputs - empty plan",
-			tsdbMetas:              map[string]metadata.Meta{},
-			parquetMetas:           map[string]schema.Meta{},
+			tsdbStreams:            map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{},
+			parquetStreams:         map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedPartitionCount: 0,
 		},
 		{
 			name: "existing partition skipped",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				"2025/01/19/parts/00-02": {
-					Name: "2025/01/19/parts/00-02",
-					Mint: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.January, 19, 2, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name:      "2025/01/19/parts/00-02",
+						Partition: &util.Partition{}, // Mark as partition
+						Mint:      time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt:      time.Date(2025, time.January, 19, 2, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			expectedPartitionCount: 2, // 02-04, 04-06 (00-02 already exists)
@@ -897,7 +957,7 @@ func TestPlanPartitions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
 			planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-			plan := planner.PlanPartitions(tc.tsdbMetas, tc.parquetMetas)
+			plan := planner.PlanPartitions(tc.tsdbStreams, tc.parquetStreams)
 
 			if len(plan.Steps) != tc.expectedPartitionCount {
 				tt.Errorf("expected %d partitions, got %d", tc.expectedPartitionCount, len(plan.Steps))
@@ -914,109 +974,134 @@ func TestPlanPartitions(t *testing.T) {
 }
 
 func TestPlanHistorical(t *testing.T) {
-	// Test planHistorical filters correctly based on notAfter time
+	// Test PlanHistorical filters correctly based on notAfter time
 	// A day is "historical" when its end time (24:00) is before notAfter
 
 	// notAfter = Jan 19 00:00 means Jan 18 (ending at midnight Jan 19) is historical
 	notAfter := time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC)
 
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
 	for _, tc := range []struct {
 		name               string
-		tsdbMetas          map[string]metadata.Meta
-		parquetMetas       map[string]schema.Meta
+		tsdbStreams        map[schema.ExternalLabelsHash]schema.TSDBBlocksStream
+		parquetStreams     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 		expectedDailyCount int
 		expectedDates      []string
 	}{
 		{
 			name: "block entirely in past - included",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas:       map[string]schema.Meta{},
+			parquetStreams:     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedDailyCount: 1,
 			expectedDates:      []string{"2025/01/17"},
 		},
 		{
 			name: "block spanning midnight - NOT included (day end equals notAfter)",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 18, 22, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 19, 4, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 18, 22, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 19, 4, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas:       map[string]schema.Meta{},
+			parquetStreams:     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedDailyCount: 0, // Jan 18 ends at Jan 19 00:00 which equals notAfter, so NOT historical (Before is strict)
 			expectedDates:      []string{},
 		},
 		{
 			name: "block entirely after notAfter - NOT included",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 19, 6, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas:       map[string]schema.Meta{},
+			parquetStreams:     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedDailyCount: 0, // Jan 19 ends at Jan 20 00:00 which is after notAfter
 			expectedDates:      []string{},
 		},
 		{
 			name:               "empty inputs - empty plan",
-			tsdbMetas:          map[string]metadata.Meta{},
-			parquetMetas:       map[string]schema.Meta{},
+			tsdbStreams:        map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{},
+			parquetStreams:     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedDailyCount: 0,
 			expectedDates:      []string{},
 		},
 		{
 			name: "multiple historical blocks",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 16, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-						MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+								MinTime: time.Date(2025, time.January, 16, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+								MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
 					},
 				},
 			},
-			parquetMetas:       map[string]schema.Meta{},
+			parquetStreams:     map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedDailyCount: 2,
 			expectedDates:      []string{"2025/01/17", "2025/01/16"},
 		},
 		{
 			name: "existing daily block skipped",
-			tsdbMetas: map[string]metadata.Meta{
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-						MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					},
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{{
+						BlockMeta: tsdb.BlockMeta{
+							ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+							MinTime: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							MaxTime: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						},
+					}},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{
-				"2025/01/17": {
-					Name: "2025/01/17",
-					Mint: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
-					Maxt: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []schema.Meta{{
+						Name: "2025/01/17",
+						Mint: time.Date(2025, time.January, 17, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						Maxt: time.Date(2025, time.January, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					}},
 				},
 			},
 			expectedDailyCount: 0, // Already converted
@@ -1025,7 +1110,7 @@ func TestPlanHistorical(t *testing.T) {
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
 			planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-			plan := planner.PlanHistorical(tc.tsdbMetas, tc.parquetMetas)
+			plan := planner.PlanHistorical(tc.tsdbStreams, tc.parquetStreams)
 
 			if len(plan.Steps) != tc.expectedDailyCount {
 				tt.Errorf("expected %d daily steps, got %d", tc.expectedDailyCount, len(plan.Steps))
@@ -1063,30 +1148,40 @@ func TestPlanPartitions_LatePartitionScenario(t *testing.T) {
 
 	notAfter := time.Date(2025, time.December, 11, 1, 25, 0, 0, time.UTC) // now - 2h grace
 
-	tsdbMetas := map[string]metadata.Meta{
-		// TSDB block covering Dec 10 20:00 - Dec 10 22:00
-		"block1": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 10, 20, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 10, 22, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// TSDB block covering Dec 10 22:00 - Dec 11 00:00 (the late arriving block!)
-		"block2": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-				MinTime: time.Date(2025, time.December, 10, 22, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{
+				// TSDB block covering Dec 10 20:00 - Dec 10 22:00
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2025, time.December, 10, 20, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 10, 22, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// TSDB block covering Dec 10 22:00 - Dec 11 00:00 (the late arriving block!)
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2025, time.December, 10, 22, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
 			},
 		},
 	}
 
 	// No daily block for Dec 10 yet
-	parquetMetas := map[string]schema.Meta{}
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{}
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-	plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// Should create partitions for Dec 10 that are ready:
 	// Dec 10 20-22: ends at 22:00 < notAfter (01:25 Dec 11) ✓
@@ -1136,37 +1231,47 @@ func TestPlanPartitions_24hWindow(t *testing.T) {
 
 	notAfter := time.Date(2025, time.December, 13, 8, 0, 0, 0, time.UTC)
 
-	tsdbMetas := map[string]metadata.Meta{
-		// Full day Dec 11 (entirely before 24h cutoff)
-		"block_dec11": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// Full day Dec 12 (partially in window - day ends Dec 13 00:00 > cutoff Dec 12 08:00)
-		"block_dec12": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-				MinTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// Partial day Dec 13 (within window)
-		"block_dec13": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
-				MinTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 13, 10, 0, 0, 0, time.UTC).UnixMilli(),
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{
+				// Full day Dec 11 (entirely before 24h cutoff)
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// Full day Dec 12 (partially in window - day ends Dec 13 00:00 > cutoff Dec 12 08:00)
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// Partial day Dec 13 (within window)
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						MinTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 13, 10, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
 			},
 		},
 	}
 
-	parquetMetas := map[string]schema.Meta{} // No daily blocks
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{} // No daily blocks
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-	plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// Dec 11: 0 partitions (day ends Dec 12 00:00, which is NOT after cutoff Dec 12 08:00)
 	// Dec 12: 12 partitions (day ends Dec 13 00:00 > cutoff, all partitions before notAfter)
@@ -1203,36 +1308,49 @@ func TestPlanPartitions_24hWindow(t *testing.T) {
 func TestPlanPartitions_DailyBlockPreventsPartitions(t *testing.T) {
 	notAfter := time.Date(2025, time.December, 13, 8, 0, 0, 0, time.UTC)
 
-	tsdbMetas := map[string]metadata.Meta{
-		// Full day Dec 11
-		"block_dec11": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// Full day Dec 12
-		"block_dec12": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-				MinTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{
+				// Full day Dec 11
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// Full day Dec 12
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 13, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
 			},
 		},
 	}
 
-	parquetMetas := map[string]schema.Meta{
-		// Daily block exists for Dec 11 - no partitions should be created for it
-		"2025/12/11": {
-			Name: "2025/12/11",
-			Mint: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			Maxt: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []schema.Meta{{
+				// Daily block exists for Dec 11 - no partitions should be created for it
+				Name: "2025/12/11",
+				Mint: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+				Maxt: time.Date(2025, time.December, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+			}},
 		},
 	}
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-	plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// Only Dec 12 partitions should be created (12 partitions)
 	expectedCount := 12
@@ -1258,20 +1376,28 @@ func TestPlanPartitions_NotAfterAtExactBoundary(t *testing.T) {
 	// notAfter exactly at Dec 10 22:00 - partition 20-22 ends at exactly this time
 	notAfter := time.Date(2025, time.December, 10, 22, 0, 0, 0, time.UTC)
 
-	tsdbMetas := map[string]metadata.Meta{
-		"block1": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 10, 18, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 10, 24, 0, 0, 0, time.UTC).UnixMilli(),
-			},
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{{
+				BlockMeta: tsdb.BlockMeta{
+					ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+					MinTime: time.Date(2025, time.December, 10, 18, 0, 0, 0, time.UTC).UnixMilli(),
+					MaxTime: time.Date(2025, time.December, 10, 24, 0, 0, 0, time.UTC).UnixMilli(),
+				},
+			}},
 		},
 	}
 
-	parquetMetas := map[string]schema.Meta{}
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{}
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-	plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// 18-20: ends at 20:00 < 22:00 ✓
 	// 20-22: ends at 22:00 == 22:00, NOT < 22:00 ✗ (Before is strict)
@@ -1306,29 +1432,39 @@ func TestPlanPartitions_OrderMostRecentFirst(t *testing.T) {
 
 	notAfter := time.Date(2025, time.December, 2, 16, 0, 0, 0, time.UTC) // 6PM - 2h
 
-	tsdbMetas := map[string]metadata.Meta{
-		// Full day Dec 1
-		"block_dec1": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// Full day Dec 2
-		"block_dec2": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-				MinTime: time.Date(2025, time.December, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{
+				// Full day Dec 1
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2025, time.December, 1, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// Full day Dec 2
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2025, time.December, 2, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 3, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
 			},
 		},
 	}
 
-	parquetMetas := map[string]schema.Meta{} // No daily blocks
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{} // No daily blocks
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
-	plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// Dec 1: all 12 partitions ready
 	// Dec 2: partitions 00-02 through 14-16 are ready (ends 16:00 == notAfter, so 14-16 NOT ready)
@@ -1382,31 +1518,41 @@ func TestPlanHistorical_DoesNotConflictWithPartitions(t *testing.T) {
 
 	notAfter := time.Date(2025, time.December, 11, 1, 25, 0, 0, time.UTC)
 
-	tsdbMetas := map[string]metadata.Meta{
-		// TSDB blocks for Dec 10
-		"block_dec10": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-				MinTime: time.Date(2025, time.December, 10, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
-			},
-		},
-		// TSDB blocks for Dec 11 (partial day)
-		"block_dec11": {
-			BlockMeta: tsdb.BlockMeta{
-				ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-				MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
-				MaxTime: time.Date(2025, time.December, 11, 4, 0, 0, 0, time.UTC).UnixMilli(),
+	var (
+		defaultExternalLabels = schema.ExternalLabels{}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+
+	tsdbStreams := map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+		defaultHash: {
+			StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+			Metas: []metadata.Meta{
+				// TSDB blocks for Dec 10
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						MinTime: time.Date(2025, time.December, 10, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
+				// TSDB blocks for Dec 11 (partial day)
+				{
+					BlockMeta: tsdb.BlockMeta{
+						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						MinTime: time.Date(2025, time.December, 11, 0, 0, 0, 0, time.UTC).UnixMilli(),
+						MaxTime: time.Date(2025, time.December, 11, 4, 0, 0, 0, time.UTC).UnixMilli(),
+					},
+				},
 			},
 		},
 	}
 
-	parquetMetas := map[string]schema.Meta{}
+	parquetStreams := map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{}
 
 	planner := NewPlannerWithPartitions(notAfter, 7, 2*time.Hour, 0, DefaultPartitionLookback)
 
 	// Historical should create daily block for Dec 10
-	historicalPlan := planner.PlanHistorical(tsdbMetas, parquetMetas)
+	historicalPlan := planner.PlanHistorical(tsdbStreams, parquetStreams)
 
 	if len(historicalPlan.Steps) != 1 {
 		t.Errorf("expected 1 historical daily step, got %d", len(historicalPlan.Steps))
@@ -1423,7 +1569,7 @@ func TestPlanHistorical_DoesNotConflictWithPartitions(t *testing.T) {
 	}
 
 	// Partitions should create partitions for Dec 10 (before daily block exists) and Dec 11
-	partitionPlan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+	partitionPlan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
 	// Dec 10: 12 partitions (all before notAfter)
 	// Dec 11: only 00-02 is ready (ends at 02:00, notAfter is 01:25, so NOT ready)

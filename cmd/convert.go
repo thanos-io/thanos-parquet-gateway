@@ -247,7 +247,7 @@ func runPartitionLoop(
 		defer iterCancel()
 
 		if err := runutil.Retry(opts.retryInterval, iterCtx.Done(), func() error {
-			tsdbMetas, parquetMetas, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
+			tsdbStreams, parquetStreams, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
 			if err != nil {
 				l.Error("Discovery failed, skipping conversion cycle", slog.Any("error", err))
 				return nil // skip cycle on discovery failure
@@ -255,9 +255,9 @@ func runPartitionLoop(
 
 			notAfter := time.Now().Add(-opts.gracePeriod)
 			planner := convert.NewPlannerWithPartitions(notAfter, 1, opts.partitionDuration, opts.partitionMaxSteps, opts.partitionLookback)
-			plan := planner.PlanPartitions(tsdbMetas, parquetMetas)
+			plan := planner.PlanPartitions(tsdbStreams, parquetStreams)
 
-			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetMetas, opts, conversionModePartition, false); err != nil {
+			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetStreams, opts, conversionModePartition, false); err != nil {
 				l.Error("Unable to convert", "error", err)
 				return err
 			}
@@ -287,7 +287,7 @@ func runHistoricalLoop(
 		defer iterCancel()
 
 		if err := runutil.Retry(opts.retryInterval, iterCtx.Done(), func() error {
-			tsdbMetas, parquetMetas, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
+			tsdbStreams, parquetStreams, err := runDiscovery(iterCtx, l, tsdbDiscoverer, parquetDiscoverer)
 			if err != nil {
 				l.Error("Discovery failed, skipping conversion cycle", slog.Any("error", err))
 				return nil // skip cycle on discovery failure
@@ -295,9 +295,9 @@ func runHistoricalLoop(
 
 			notAfter := time.Now().Add(-opts.gracePeriod)
 			planner := convert.NewPlannerWithPartitions(notAfter, opts.historicalMaxSteps, opts.partitionDuration, 0, opts.partitionLookback)
-			plan := planner.PlanHistorical(tsdbMetas, parquetMetas)
+			plan := planner.PlanHistorical(tsdbStreams, parquetStreams)
 
-			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetMetas, opts, conversionModeHistorical, true); err != nil {
+			if err := advanceConversion(iterCtx, l, tsdbBkt, parquetBkt, plan, parquetStreams, opts, conversionModeHistorical, true); err != nil {
 				l.Error("Unable to convert", "error", err)
 				return err
 			}
@@ -316,7 +316,7 @@ func runDiscovery(
 	log *slog.Logger,
 	tsdbDiscoverer *locate.TSDBDiscoverer,
 	parquetDiscoverer *locate.Discoverer,
-) (map[string]metadata.Meta, map[string]schema.Meta, error) {
+) (map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, error) {
 	dg, dCtx := errgroup.WithContext(ctx)
 	dg.Go(func() error {
 		log.Debug("Running TSDB discovery")
@@ -336,7 +336,7 @@ func runDiscovery(
 		log.Warn("Discovery failed, skipping cycle to prevent incorrect data", "error", err)
 		return nil, nil, err
 	}
-	return tsdbDiscoverer.Metas(), parquetDiscoverer.Metas(), nil
+	return tsdbDiscoverer.Streams(), parquetDiscoverer.Streams(), nil
 }
 
 func advanceConversion(
@@ -345,7 +345,7 @@ func advanceConversion(
 	tsdbBkt objstore.Bucket,
 	parquetBkt objstore.Bucket,
 	plan convert.Plan,
-	parquetMetas map[string]schema.Meta,
+	parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream,
 	opts conversionOpts,
 	tempDirSuffix string,
 	cleanupStale bool,
@@ -438,7 +438,7 @@ func advanceConversion(
 	log.Info("Plan completed")
 
 	if cleanupStale {
-		cleanupStalePartitions(ctx, log, parquetBkt, parquetMetas)
+		cleanupStalePartitions(ctx, log, parquetBkt, parquetStreams)
 	}
 	closeBlocks(log, prevBlocks...)
 	return nil
@@ -627,10 +627,13 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 	return nil
 }
 
-// cleanupPartitionsForDay removes all partition files under the parts/ directory for a given day.
-func cleanupPartitionsForDay(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, day util.Date) {
-	// get correct path format (YYYY/MM/DD)
+// cleanupPartitionsForDay removes all partition files under the parts/ directory for a given day and stream.
+func cleanupPartitionsForDay(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, day util.Date, extLabelsHash schema.ExternalLabelsHash) {
+	// Build path with external labels hash prefix for multi-tenant support
 	dayPath := schema.BlockNameForDay(day)
+	if extLabelsHash != 0 {
+		dayPath = fmt.Sprintf("%s/%s", extLabelsHash.String(), dayPath)
+	}
 	partsDir := dayPath + "/parts/"
 
 	deleted := 0
@@ -654,55 +657,63 @@ func cleanupPartitionsForDay(ctx context.Context, log *slog.Logger, bkt objstore
 // cleanupStalePartitions scans the bucket for partitions that have a corresponding daily block
 // and deletes them. Only cleans partitions for days before yesterday to ensure serve component
 // has had sufficient time to discover the daily block.
-func cleanupStalePartitions(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, parquetMetas map[string]schema.Meta) {
+// Now properly handles multi-tenant scenarios by iterating over streams.
+func cleanupStalePartitions(ctx context.Context, log *slog.Logger, bkt objstore.Bucket, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) {
 	// Only clean partitions for days before yesterday.
 	// This ensures at least 24-48 hours pass after daily block creation
 	yesterday := time.Now().UTC().Truncate(24 * time.Hour).Add(-24 * time.Hour)
 
-	// Find daily blocks that are old enough
-	dailyBlocks := make(map[string]struct{})
-	for name, meta := range parquetMetas {
-		if schema.IsPartition(name) {
-			continue
-		}
-		blockDay := time.UnixMilli(meta.Mint).UTC().Truncate(24 * time.Hour)
-		if blockDay.Before(yesterday) {
-			dailyBlocks[name] = struct{}{}
-		}
-	}
-
-	if len(dailyBlocks) == 0 {
-		return
-	}
-
-	// Find partitions that should be cleaned up
-	cleaned := make(map[string]struct{}) // track cleaned days to avoid duplicates
-	for name := range parquetMetas {
+	for extLabelsHash, stream := range parquetStreams {
 		if ctx.Err() != nil {
 			return
 		}
-		if !schema.IsPartition(name) {
+
+		// Find daily blocks that are old enough in this stream
+		dailyBlocks := make(map[string]struct{})
+		for _, meta := range stream.Metas {
+			if schema.IsPartition(meta.Name) {
+				continue
+			}
+			blockDay := time.UnixMilli(meta.Mint).UTC().Truncate(24 * time.Hour)
+			if blockDay.Before(yesterday) {
+				dailyBlocks[meta.Name] = struct{}{}
+			}
+		}
+
+		if len(dailyBlocks) == 0 {
 			continue
 		}
 
-		dailyName := schema.DailyBlockNameForPartition(name)
-		if _, alreadyCleaned := cleaned[dailyName]; alreadyCleaned {
-			continue
-		}
-		if _, hasDailyBlock := dailyBlocks[dailyName]; !hasDailyBlock {
-			continue
-		}
+		// Find partitions in this stream that should be cleaned up
+		cleaned := make(map[string]struct{}) // track cleaned days to avoid duplicates
+		for _, meta := range stream.Metas {
+			if ctx.Err() != nil {
+				return
+			}
+			if !schema.IsPartition(meta.Name) {
+				continue
+			}
 
-		day, err := util.DateFromString(dailyName)
-		if err != nil {
-			log.Warn("Failed to parse day from partition", "partition", name, "error", err)
-			continue
-		}
+			dailyName := schema.DailyBlockNameForPartition(meta.Name)
+			if _, alreadyCleaned := cleaned[dailyName]; alreadyCleaned {
+				continue
+			}
+			if _, hasDailyBlock := dailyBlocks[dailyName]; !hasDailyBlock {
+				continue
+			}
 
-		log.Info("Cleaning up stale partitions for day with existing daily block",
-			slog.String("day", day.String()),
-			slog.String("daily_block", dailyName))
-		cleanupPartitionsForDay(ctx, log, bkt, day)
-		cleaned[dailyName] = struct{}{}
+			day, err := util.DateFromString(dailyName)
+			if err != nil {
+				log.Warn("Failed to parse day from partition", "partition", meta.Name, "error", err)
+				continue
+			}
+
+			log.Info("Cleaning up stale partitions for day with existing daily block",
+				slog.String("day", day.String()),
+				slog.String("daily_block", dailyName),
+				slog.String("external_labels_hash", extLabelsHash.String()))
+			cleanupPartitionsForDay(ctx, log, bkt, day, extLabelsHash)
+			cleaned[dailyName] = struct{}{}
+		}
 	}
 }
