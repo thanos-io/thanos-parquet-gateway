@@ -623,7 +623,7 @@ func TestPlanner(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbMetas, tc.parquetMetas, 0, 0)
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams, 0, 0)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
@@ -637,6 +637,10 @@ func TestPlanner(t *testing.T) {
 }
 
 func TestPlannerWithTimeWindow(t *testing.T) {
+	var (
+		defaultExternalLabels = schema.ExternalLabels{"stream": "eu-west-1"}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
 	mockBlocks := func(ulids ...string) []metadata.Meta {
 		metas := make([]metadata.Meta, 0, len(ulids))
 		for _, v := range ulids {
@@ -648,15 +652,16 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	now = now.Truncate(24 * time.Hour)
+
 	for _, tc := range []struct {
 		name string
 
-		notAfter     time.Time
-		maxDays      int
-		minOffset    time.Duration // Changed from int64 to time.Duration
-		maxOffset    time.Duration // Changed from int64 to time.Duration
-		tsdbMetas    map[string]metadata.Meta
-		parquetMetas map[string]schema.Meta
+		notAfter       time.Time
+		maxDays        int
+		minOffset      time.Duration // Changed from int64 to time.Duration
+		maxOffset      time.Duration // Changed from int64 to time.Duration
+		tsdbStreams    map[schema.ExternalLabelsHash]schema.TSDBBlocksStream
+		parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
 
 		expectedPlan Plan
 	}{
@@ -666,38 +671,42 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 			maxDays:   10,
 			minOffset: -192 * time.Hour,
 			maxOffset: -48 * time.Hour,
-			tsdbMetas: map[string]metadata.Meta{
-
-				"01JT0DPYGA1HPW5RBZ1KBXCNXA": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
-						MinTime: now.AddDate(0, 0, -10).UTC().UnixMilli(),
-						MaxTime: now.AddDate(0, 0, -9).UTC().UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXB": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
-						MinTime: now.AddDate(0, 0, -15).UTC().UnixMilli(),
-						MaxTime: now.AddDate(0, 0, -14).UTC().UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXC": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
-						MinTime: now.AddDate(0, 0, -7).UTC().UnixMilli(),
-						MaxTime: now.AddDate(0, 0, -6).UTC().UnixMilli(),
-					},
-				},
-				"01JT0DPYGA1HPW5RBZ1KBXCNXD": {
-					BlockMeta: tsdb.BlockMeta{
-						ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXD"),
-						MinTime: now.AddDate(0, 0, -4).UTC().UnixMilli(),
-						MaxTime: now.AddDate(0, 0, -3).UTC().UnixMilli(),
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+								MinTime: now.AddDate(0, 0, -10).UTC().UnixMilli(),
+								MaxTime: now.AddDate(0, 0, -9).UTC().UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+								MinTime: now.AddDate(0, 0, -15).UTC().UnixMilli(),
+								MaxTime: now.AddDate(0, 0, -14).UTC().UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+								MinTime: now.AddDate(0, 0, -7).UTC().UnixMilli(),
+								MaxTime: now.AddDate(0, 0, -6).UTC().UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXD"),
+								MinTime: now.AddDate(0, 0, -4).UTC().UnixMilli(),
+								MaxTime: now.AddDate(0, 0, -3).UTC().UnixMilli(),
+							},
+						},
 					},
 				},
 			},
-			parquetMetas: map[string]schema.Meta{},
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
 			expectedPlan: Plan{
 				Steps: []Step{
 					{
@@ -706,7 +715,8 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 							now.AddDate(0, 0, -4).Month(),
 							now.AddDate(0, 0, -4).Day(),
 						),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXD"),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXD"),
+						ExternalLabels: defaultExternalLabels,
 					},
 					{
 						Date: util.NewDate(
@@ -714,14 +724,15 @@ func TestPlannerWithTimeWindow(t *testing.T) {
 							now.AddDate(0, 0, -7).Month(),
 							now.AddDate(0, 0, -7).Day(),
 						),
-						Sources: mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						ExternalLabels: defaultExternalLabels,
 					},
 				},
 			},
 		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams), tc.minOffset, tc.maxOffset)
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams, tc.minOffset, tc.maxOffset)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
