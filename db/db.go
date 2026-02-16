@@ -29,8 +29,8 @@ import (
 // DB is a horizontal partitioning of multiple non-overlapping blocks that are
 // aligned to 24h and span exactly 24h.
 type DB struct {
-	syncer    syncer
-	extLabels labels.Labels
+	syncer            syncer
+	overrideExtLabels labels.Labels
 }
 
 type syncer interface {
@@ -54,7 +54,7 @@ func NewDB(syncer syncer, opts ...DBOption) *DB {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	return &DB{syncer: syncer, extLabels: cfg.extLabels}
+	return &DB{syncer: syncer, overrideExtLabels: cfg.extLabels}
 }
 
 func (db *DB) Timerange() (int64, int64) {
@@ -71,8 +71,37 @@ func (db *DB) Timerange() (int64, int64) {
 	return mint, maxt
 }
 
-func (db *DB) Extlabels() labels.Labels {
-	return db.extLabels
+type BlockInfo struct {
+	MinT, MaxT int64
+	Labels     schema.ExternalLabels
+}
+
+func (db *DB) BlockStreams() map[schema.ExternalLabelsHash]BlockInfo {
+	blocks := db.syncer.Blocks()
+
+	blockStreams := make(map[schema.ExternalLabelsHash]BlockInfo)
+	for _, blk := range blocks {
+		blkMint, blkMaxt := blk.Timerange()
+
+		st, ok := blockStreams[blk.ExternalLabels().Hash()]
+		if !ok {
+			st = BlockInfo{
+				MinT:   blkMint,
+				MaxT:   blkMaxt,
+				Labels: blk.ExternalLabels(),
+			}
+		} else {
+			st.MinT = min(st.MinT, blkMint)
+			st.MaxT = max(st.MaxT, blkMaxt)
+		}
+		blockStreams[blk.ExternalLabels().Hash()] = st
+	}
+
+	return blockStreams
+}
+
+func (db *DB) OverrideExtLabels() labels.Labels {
+	return db.overrideExtLabels
 }
 
 type queryableConfig struct {
@@ -83,6 +112,11 @@ type queryableConfig struct {
 	selectChunkPartitionMaxRange       uint64
 	selectChunkPartitionMaxGap         uint64
 	selectChunkPartitionMaxConcurrency int
+
+	labelValuesRowCountQuota *limits.Quota
+	labelNamesRowCountQuota  *limits.Quota
+
+	shardCountQuota *limits.Quota
 }
 
 type QueryableOption func(*queryableConfig)
@@ -123,6 +157,24 @@ func SelectChunkPartitionMaxConcurrency(n int) QueryableOption {
 	}
 }
 
+func LabelValuesRowCountQuota(maxRows int64) QueryableOption {
+	return func(cfg *queryableConfig) {
+		cfg.labelValuesRowCountQuota = limits.NewQuota(maxRows)
+	}
+}
+
+func LabelNamesRowCountQuota(maxRows int64) QueryableOption {
+	return func(cfg *queryableConfig) {
+		cfg.labelNamesRowCountQuota = limits.NewQuota(maxRows)
+	}
+}
+
+func ShardCountQuota(maxShards int64) QueryableOption {
+	return func(cfg *queryableConfig) {
+		cfg.shardCountQuota = limits.NewQuota(maxShards)
+	}
+}
+
 // Queryable returns a DBQueryable (which implements both storage.Queryable and storage.ChunkQueryable)
 // that drops replica labels at runtime. Replica labels are labels that identify a replica,
 // i.e. one member of an HA pair of Prometheus servers. Thanos might request at query time
@@ -136,6 +188,9 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 		selectChunkPartitionMaxRange:       math.MaxUint64,
 		selectChunkPartitionMaxGap:         math.MaxUint64,
 		selectChunkPartitionMaxConcurrency: 0,
+		labelValuesRowCountQuota:           limits.UnlimitedQuota(),
+		labelNamesRowCountQuota:            limits.UnlimitedQuota(),
+		shardCountQuota:                    limits.UnlimitedQuota(),
 	}
 	for i := range opts {
 		opts[i](&cfg)
@@ -143,20 +198,22 @@ func (db *DB) Queryable(opts ...QueryableOption) *DBQueryable {
 
 	return &DBQueryable{
 		blocks:                             db.syncer.Blocks(),
-		extLabels:                          db.extLabels,
+		extLabels:                          db.overrideExtLabels,
 		replicaLabelNames:                  cfg.replicaLabelsNames,
 		selectChunkBytesQuota:              cfg.selectChunkBytesQuota,
 		selectRowCountQuota:                cfg.selectRowCountQuota,
 		selectChunkPartitionMaxRange:       cfg.selectChunkPartitionMaxRange,
 		selectChunkPartitionMaxGap:         cfg.selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: cfg.selectChunkPartitionMaxConcurrency,
+		labelValuesRowCountQuota:           cfg.labelValuesRowCountQuota,
+		labelNamesRowCountQuota:            cfg.labelNamesRowCountQuota,
+		shardCountQuota:                    cfg.shardCountQuota,
 	}
 }
 
 type DBQueryable struct {
 	blocks []*Block
 
-	// extLabels are added to all series in the result set overriding any internal labels.
 	extLabels labels.Labels
 
 	// replicaLabelNames are names of labels that identify replicas, they are dropped
@@ -178,6 +235,15 @@ type DBQueryable struct {
 
 	// selectChunkPartitionMaxConcurrency is the maximum amount of parallel object storage requests we run per select.
 	selectChunkPartitionMaxConcurrency int
+
+	// labelValuesRowCountQuota is the limit of rows that "LabelValues" calls can touch.
+	labelValuesRowCountQuota *limits.Quota
+
+	// labelNamesRowCountQuota is the limit of rows that "LabelNames" calls can touch.
+	labelNamesRowCountQuota *limits.Quota
+
+	// shardCountQuota is the limit of shards that any query can touch
+	shardCountQuota *limits.Quota
 }
 
 func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
@@ -200,6 +266,9 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 
 	qs := make([]*BlockQuerier, 0, len(db.blocks))
 	for _, blk := range bs {
+		if err := db.shardCountQuota.Reserve(int64(len(blk.shards))); err != nil {
+			return nil, fmt.Errorf("would use too many shards: %w", err)
+		}
 		bmint, bmaxt := blk.Timerange()
 
 		start, end := util.Intersection(mint, maxt, bmint, bmaxt)
@@ -212,6 +281,8 @@ func (db *DBQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 			db.selectChunkPartitionMaxGap,
 			db.selectChunkPartitionMaxConcurrency,
 			honorProjections,
+			db.labelValuesRowCountQuota,
+			db.labelNamesRowCountQuota,
 		).Querier(start, end)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get block querier: %w", err)

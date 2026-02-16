@@ -20,7 +20,7 @@ import (
 )
 
 type MetaFilter interface {
-	filterMetas(map[string]schema.Meta) map[string]schema.Meta
+	filterMetas([]schema.Meta) []schema.Meta
 	filterBlocks([]*db.Block) []*db.Block
 }
 
@@ -29,8 +29,8 @@ var AllMetasMetaFilter = allMetas{}
 type allMetas struct {
 }
 
-func (mf allMetas) filterMetas(metas map[string]schema.Meta) map[string]schema.Meta { return metas }
-func (mf allMetas) filterBlocks(blocks []*db.Block) []*db.Block                     { return blocks }
+func (mf allMetas) filterMetas(metas []schema.Meta) []schema.Meta { return metas }
+func (mf allMetas) filterBlocks(blocks []*db.Block) []*db.Block   { return blocks }
 
 type ThanosBackfillMetaFilter struct {
 	endpoint string
@@ -44,16 +44,16 @@ func NewThanosBackfillMetaFilter(endpoint string, overlap time.Duration) *Thanos
 	return &ThanosBackfillMetaFilter{endpoint: endpoint, overlap: overlap.Milliseconds()}
 }
 
-func (tp *ThanosBackfillMetaFilter) filterMetas(metas map[string]schema.Meta) map[string]schema.Meta {
+func (tp *ThanosBackfillMetaFilter) filterMetas(metas []schema.Meta) []schema.Meta {
 	tp.mu.Lock()
 	defer tp.mu.Unlock()
 
-	res := make(map[string]schema.Meta, len(metas))
-	for k, v := range metas {
+	res := make([]schema.Meta, 0, len(metas))
+	for _, v := range metas {
 		if util.Contains(min(tp.mint+tp.overlap, tp.maxt), tp.maxt, v.Mint, v.Maxt) {
 			continue
 		}
-		res[k] = v
+		res = append(res, v)
 	}
 	return res
 }

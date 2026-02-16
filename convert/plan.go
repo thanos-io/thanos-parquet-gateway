@@ -15,8 +15,9 @@ import (
 )
 
 type Step struct {
-	Date    util.Date       // Date for which we are building a parquet block.
-	Sources []metadata.Meta // Source TSDB blocks we will use to generate a parquet block.
+	Date           util.Date       // Date for which we are building a parquet block.
+	Sources        []metadata.Meta // Source TSDB blocks we will use to generate a parquet block.
+	ExternalLabels schema.ExternalLabels
 }
 
 // isFullyCovered returns true if blocks for this date cover the whole day.
@@ -54,12 +55,7 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) Plan(
-	tsdbMetas map[string]metadata.Meta,
-	parquetMetas map[string]schema.Meta,
-	minOffset time.Duration,
-	maxOffset time.Duration,
-) Plan {
+func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream,	minOffset time.Duration,maxOffset time.Duration) Plan  {
 
 	var (
 		windowActive bool
@@ -84,7 +80,7 @@ func (p Planner) Plan(
 	}
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
-	for _, tsdb := range tsdbMetas {
+	for _, tsdb := range tsdb.Metas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
 			if windowActive {
 				pt := partialDate.ToTime()
@@ -100,7 +96,7 @@ func (p Planner) Plan(
 	}
 
 	pqDates := map[util.Date]struct{}{}
-	for _, pq := range parquetMetas {
+	for _, pq := range parquet.Metas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
 
 			if windowActive {
@@ -155,6 +151,26 @@ func (p Planner) Plan(
 	steps = limitSteps(steps, p.maxDays)
 
 	return Plan{Steps: steps}
+}
+
+func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) Plan {
+	outPlan := Plan{Steps: []Step{}}
+
+	for tsdbEH := range tsdbStreams {
+		parquet, ok := parquetStreams[tsdbEH]
+		if !ok {
+			parquet = schema.ParquetBlocksStream{}
+		}
+
+		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet)
+		for i := range streamPlan.Steps {
+			streamPlan.Steps[i].ExternalLabels = tsdbStreams[tsdbEH].ExternalLabels
+		}
+
+		outPlan.Steps = append(outPlan.Steps, streamPlan.Steps...)
+	}
+
+	return outPlan
 }
 
 // Get rid of the most recent day if we don't have TSDB blocks for the whole day.

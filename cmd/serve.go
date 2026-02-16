@@ -26,6 +26,7 @@ import (
 	"github.com/thanos-io/thanos/pkg/api/query/querypb"
 	"github.com/thanos-io/thanos/pkg/info/infopb"
 	"github.com/thanos-io/thanos/pkg/store/storepb"
+	grpc_health "google.golang.org/grpc/health/grpc_health_v1"
 
 	_ "github.com/mostynb/go-grpc-compression/snappy"
 	"google.golang.org/grpc"
@@ -33,6 +34,7 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/contrib/propagators/autoprop"
+	"google.golang.org/grpc/health"
 
 	cfgrpc "github.com/thanos-io/thanos-parquet-gateway/api/grpc"
 	cfhttp "github.com/thanos-io/thanos-parquet-gateway/api/http"
@@ -70,7 +72,7 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("STDOUT").EnumVar(&opts.exporterType, "JAEGER", "STDOUT")
+	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("").EnumVar(&opts.exporterType, "JAEGER", "STDOUT", "")
 	cmd.Flag("tracing.jaeger.endpoint", "endpoint to send traces, eg. https://example.com:4318/v1/traces").StringVar(&opts.jaegerEndpoint)
 	cmd.Flag("tracing.sampling.param", "sample of traces to send").Default("0.1").Float64Var(&opts.samplingParam)
 	cmd.Flag("tracing.sampling.type", "type of sampling").Default("PROBABILISTIC").EnumVar(&opts.samplingType, "PROBABILISTIC", "ALWAYS", "NEVER")
@@ -89,6 +91,7 @@ func (opts *syncerOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("block.filter.thanos-backfill.endpoint", "endpoint to ignore for backfill").StringVar(&opts.filterThanosBackfillEndpoint)
 	cmd.Flag("block.filter.thanos-backfill.interval", "interval to update thanos-backfill timerange").Default("1m").DurationVar(&opts.filterThanosBackfillUpdateInterval)
 	cmd.Flag("block.filter.thanos-backfill.overlap", "overlap interval to leave for backfill").Default("24h").DurationVar(&opts.filterThanosBackfillOverlap)
+	cmd.Flag("block.labelfilepath", "Path where to put label files").Default("/tmp").StringVar(&opts.syncerLabelFilesDir)
 }
 
 func (opts *queryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
@@ -98,9 +101,13 @@ func (opts *queryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("query.step", "default step for range queries").Default("30s").DurationVar(&opts.defaultStep)
 	cmd.Flag("query.lookback", "default lookback for queries").Default("5m").DurationVar(&opts.defaultLookback)
 	cmd.Flag("query.timeout", "default timeout for queries").Default("30s").DurationVar(&opts.defaultTimeout)
+	cmd.Flag("query.engine.timeout", "max query timeout for the engine").Default("5m").DurationVar(&opts.engineTimeout)
 	cmd.Flag("query.external-label", "external label to add to results").StringMapVar(&opts.externalLabels)
+	cmd.Flag("query.limits.max-shard-count", "the amount of shards a query can touch in all operations. (0 is unlimited)").Default("0").Int64Var(&opts.shardCountQuota)
 	cmd.Flag("query.limits.select.max-chunk-bytes", "the amount of chunk bytes a query can fetch in 'Select' operations. (0B is unlimited)").Default("0B").BytesVar(&opts.selectChunkBytesQuota)
 	cmd.Flag("query.limits.select.max-row-count", "the amount of rows a query can fetch in 'Select' operations. (0 is unlimited)").Default("0").Int64Var(&opts.selectRowCountQuota)
+	cmd.Flag("query.limits.label-values.max-row-count", "the amount of rows a query can fetch in 'LabelValues' operations. (0 is unlimited)").Default("0").Int64Var(&opts.labelValuesRowCountQuota)
+	cmd.Flag("query.limits.label-names.max-row-count", "the amount of rows a query can fetch in 'LabelNames' operations. (0 is unlimited)").Default("0").Int64Var(&opts.labelNamesRowCountQuota)
 	cmd.Flag("query.limits.queries.max-concurrent", "the amount of concurrent queries we can execute").Default("100").IntVar(&opts.concurrentQueryQuota)
 	cmd.Flag("query.storage.select.chunk-partition.max-range-bytes", "coalesce chunk reads into ranges of this length to be scheduled concurrently.").Default("64MiB").BytesVar(&opts.selectChunkPartitionMaxRange)
 	cmd.Flag("query.storage.select.chunk-partition.max-gap-bytes", "the maximum acceptable gap when coalescing chunk ranges.").Default("64MiB").BytesVar(&opts.selectChunkPartitionMaxGap)
@@ -174,12 +181,16 @@ type queryOpts struct {
 	defaultStep     time.Duration
 	defaultLookback time.Duration
 	defaultTimeout  time.Duration
+	engineTimeout   time.Duration
 	externalLabels  map[string]string
 
 	// Limits
-	selectChunkBytesQuota units.Base2Bytes
-	selectRowCountQuota   int64
-	concurrentQueryQuota  int
+	shardCountQuota          int64
+	selectChunkBytesQuota    units.Base2Bytes
+	selectRowCountQuota      int64
+	labelValuesRowCountQuota int64
+	labelNamesRowCountQuota  int64
+	concurrentQueryQuota     int
 
 	// Storage
 	selectChunkPartitionMaxRange       units.Base2Bytes
@@ -198,7 +209,7 @@ func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 			Logger:                   nil,
 			Reg:                      nil,
 			MaxSamples:               10_000_000,
-			Timeout:                  opts.defaultTimeout,
+			Timeout:                  opts.engineTimeout,
 			NoStepSubqueryIntervalFn: func(int64) int64 { return time.Minute.Milliseconds() },
 			EnableAtModifier:         true,
 			EnableNegativeOffset:     true,
@@ -218,6 +229,8 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		grpc.UnaryInterceptor(cfgrpc.ServerMetrics.UnaryServerInterceptor()),
 		grpc.StreamInterceptor(cfgrpc.ServerMetrics.StreamServerInterceptor()),
 	)
+	healthServer := health.NewServer()
+	grpc_health.RegisterHealthServer(server, healthServer)
 
 	queryServer := cfgrpc.NewQueryServer(
 		db,
@@ -228,6 +241,9 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		cfgrpc.SelectChunkPartitionMaxRange(qOpts.selectChunkPartitionMaxRange),
 		cfgrpc.SelectChunkPartitionMaxGap(qOpts.selectChunkPartitionMaxGap),
 		cfgrpc.SelectChunkPartitionMaxConcurrency(qOpts.selectChunkPartitionMaxConcurrency),
+		cfgrpc.LabelValuesRowCountQuota(qOpts.labelValuesRowCountQuota),
+		cfgrpc.LabelNamesRowCountQuota(qOpts.labelNamesRowCountQuota),
+		cfgrpc.ShardCountQuota(qOpts.shardCountQuota),
 	)
 
 	infopb.RegisterInfoServer(server, queryServer)
@@ -246,6 +262,9 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 		return server.Serve(l)
 	}, func(error) {
 		log.Info("Shutting down thanos api", slog.Int("port", opts.port))
+
+		healthServer.SetServingStatus("", grpc_health.HealthCheckResponse_NOT_SERVING)
+
 		ctx, cancel := context.WithTimeout(context.Background(), opts.shutdownTimeout)
 		defer cancel()
 
@@ -277,6 +296,10 @@ func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOp
 			cfhttp.SelectChunkPartitionMaxRange(qOpts.selectChunkPartitionMaxRange),
 			cfhttp.SelectChunkPartitionMaxGap(qOpts.selectChunkPartitionMaxGap),
 			cfhttp.SelectChunkPartitionMaxConcurrency(qOpts.selectChunkPartitionMaxConcurrency),
+			cfhttp.LabelValuesRowCountQuota(qOpts.labelValuesRowCountQuota),
+			cfhttp.LabelNamesRowCountQuota(qOpts.labelNamesRowCountQuota),
+			cfhttp.ShardCountQuota(qOpts.shardCountQuota),
+			cfhttp.WithLogger(log),
 		))
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", opts.port), Handler: handler}

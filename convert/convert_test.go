@@ -6,7 +6,6 @@ package convert
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +19,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/util/teststorage"
+	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"go.uber.org/goleak"
@@ -70,7 +70,7 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -78,12 +78,12 @@ func TestConverter(t *testing.T) {
 	if err := discoverer.Discover(t.Context()); err != nil {
 		t.Fatalf("unable to convert parquet block: %s", err)
 	}
-	metas := discoverer.Metas()
+	streams := discoverer.Streams()
 
-	if n := len(metas); n != 1 {
+	if n := len(streams); n != 1 {
 		t.Fatalf("unexpected number of metas: %d", n)
 	}
-	meta := metas[slices.Collect(maps.Keys(metas))[0]]
+	meta := streams[slices.Collect(maps.Keys(streams))[0]].Metas[0]
 
 	if n := meta.Shards; n != 2 {
 		t.Fatalf("unexpected number of shards: %d", n)
@@ -91,11 +91,11 @@ func TestConverter(t *testing.T) {
 
 	totalRows := int64(0)
 	for i := range int(meta.Shards) {
-		lf, err := loadParquetFile(t.Context(), bkt, schema.LabelsPfileNameForShard(meta.Name, i))
+		lf, err := loadParquetFile(t, bkt, schema.LabelsPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, i))
 		if err != nil {
 			t.Fatalf("unable to load label parquet file for shard %d: %s", i, err)
 		}
-		cf, err := loadParquetFile(t.Context(), bkt, schema.ChunksPfileNameForShard(meta.Name, i))
+		cf, err := loadParquetFile(t, bkt, schema.ChunksPfileNameForShard(schema.ExternalLabelsHash(0), meta.Date, i))
 		if err != nil {
 			t.Fatalf("unable to load chunk parquet file for shard %d: %s", i, err)
 		}
@@ -113,7 +113,7 @@ func TestConverter(t *testing.T) {
 		if err := nameColumnPageBoundsAreAscending(lf); err != nil {
 			t.Fatalf("unable to check that __name__ column page bounds are ascending: %s", err)
 		}
-		if err := nameColumnValuesAreIncreasing(lf); err != nil {
+		if err := nameColumnValuesAreIncreasing(t, lf); err != nil {
 			t.Fatalf("unable to check that __name__ column values are increasing: %s", err)
 		}
 	}
@@ -163,17 +163,21 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 		SortBy(labels.MetricName),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, []Convertible{&HeadBlock{h}}, opts...); err != nil {
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }
 
-func loadParquetFile(ctx context.Context, bkt objstore.BucketReader, name string) (*parquet.File, error) {
-	rdr, err := bkt.Get(ctx, name)
+func loadParquetFile(t testing.TB, bkt objstore.BucketReader, name string) (*parquet.File, error) {
+	t.Helper()
+
+	rdr, err := bkt.Get(t.Context(), name)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get object: %w", err)
 	}
-	defer rdr.Close()
+	defer func() {
+		require.NoError(t, rdr.Close())
+	}()
 
 	buf := bytes.NewBuffer(nil)
 	if _, err := io.Copy(buf, rdr); err != nil {
@@ -243,7 +247,7 @@ func nameColumnPageBoundsAreAscending(pf *parquet.File) error {
 	return nil
 }
 
-func nameColumnValuesAreIncreasing(pf *parquet.File) error {
+func nameColumnValuesAreIncreasing(t testing.TB, pf *parquet.File) error {
 	lc, ok := pf.Schema().Lookup(schema.LabelNameToColumn(labels.MetricName))
 	if !ok {
 		return fmt.Errorf("file is missing column for label key: %s", labels.MetricName)
@@ -254,7 +258,9 @@ func nameColumnValuesAreIncreasing(pf *parquet.File) error {
 		cc := rg.ColumnChunks()[lc.ColumnIndex]
 
 		pgs := cc.Pages()
-		defer pgs.Close()
+		defer func() {
+			require.NoError(t, pgs.Close())
+		}()
 
 		vwf := parquet.ValueWriterFunc(func(vs []parquet.Value) (int, error) {
 			if len(vs) == 0 || len(vs) == 1 {

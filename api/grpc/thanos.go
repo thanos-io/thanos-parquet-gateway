@@ -7,6 +7,8 @@ package grpc
 import (
 	"context"
 	"fmt"
+	"math"
+	"slices"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -31,6 +33,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 // Taken from https://github.com/thanos-community/thanos-promql-connector/blob/main/main.go
@@ -42,6 +45,9 @@ type queryGRPCConfig struct {
 	selectChunkPartitionMaxRange       units.Base2Bytes
 	selectChunkPartitionMaxGap         units.Base2Bytes
 	selectChunkPartitionMaxConcurrency int
+	labelValuesRowCountQuota           int64
+	labelNamesRowCountQuota            int64
+	shardCountQuota                    int64
 }
 
 type QueryGRPCOption func(*queryGRPCConfig)
@@ -82,12 +88,37 @@ func SelectChunkPartitionMaxConcurrency(n int) QueryGRPCOption {
 	}
 }
 
+func LabelValuesRowCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.labelValuesRowCountQuota = n
+	}
+}
+
+func LabelNamesRowCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.labelNamesRowCountQuota = n
+	}
+}
+
+func ShardCountQuota(n int64) QueryGRPCOption {
+	return func(qapi *queryGRPCConfig) {
+		qapi.shardCountQuota = n
+	}
+}
+
+type parquetDatabase interface {
+	Timerange() (int64, int64)
+	BlockStreams() map[schema.ExternalLabelsHash]db.BlockInfo
+	OverrideExtLabels() labels.Labels
+	Queryable(options ...db.QueryableOption) *db.DBQueryable
+}
+
 type QueryServer struct {
 	querypb.UnimplementedQueryServer
 	infopb.UnimplementedInfoServer
 	storepb.UnimplementedStoreServer
 
-	db     *db.DB
+	db     parquetDatabase
 	engine promql.QueryEngine
 
 	concurrentQuerySemaphore           *limits.Semaphore
@@ -96,6 +127,9 @@ type QueryServer struct {
 	selectChunkPartitionMaxRange       units.Base2Bytes
 	selectChunkPartitionMaxGap         units.Base2Bytes
 	selectChunkPartitionMaxConcurrency int
+	labelValuesRowCountQuota           int64
+	labelNamesRowCountQuota            int64
+	shardCountQuota                    int64
 }
 
 func (qs *QueryServer) queryable(replicaLabels ...string) *db.DBQueryable {
@@ -106,6 +140,9 @@ func (qs *QueryServer) queryable(replicaLabels ...string) *db.DBQueryable {
 		db.SelectChunkPartitionMaxRange(qs.selectChunkPartitionMaxRange),
 		db.SelectChunkPartitionMaxGap(qs.selectChunkPartitionMaxGap),
 		db.SelectChunkPartitionMaxConcurrency(qs.selectChunkPartitionMaxConcurrency),
+		db.LabelValuesRowCountQuota(qs.labelValuesRowCountQuota),
+		db.LabelNamesRowCountQuota(qs.labelNamesRowCountQuota),
+		db.ShardCountQuota(qs.shardCountQuota),
 	)
 }
 
@@ -123,25 +160,73 @@ func NewQueryServer(db *db.DB, engine promql.QueryEngine, opts ...QueryGRPCOptio
 		selectChunkPartitionMaxRange:       cfg.selectChunkPartitionMaxRange,
 		selectChunkPartitionMaxGap:         cfg.selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: cfg.selectChunkPartitionMaxConcurrency,
+		labelValuesRowCountQuota:           cfg.labelValuesRowCountQuota,
+		labelNamesRowCountQuota:            cfg.labelNamesRowCountQuota,
+		shardCountQuota:                    cfg.shardCountQuota,
 	}
 }
 
 func (qs *QueryServer) Info(_ context.Context, _ *infopb.InfoRequest) (*infopb.InfoResponse, error) {
-	mint, maxt := qs.db.Timerange()
-	extlabels := qs.db.Extlabels()
-	return &infopb.InfoResponse{
-		ComponentType: component.Query.String(),
-		LabelSets:     zLabelSetsFromPromLabels(extlabels),
-		Store: &infopb.StoreInfo{
-			MinTime: mint,
-			MaxTime: maxt,
-			TsdbInfos: []infopb.TSDBInfo{
-				{
-					MinTime: mint,
-					MaxTime: maxt,
-					Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(extlabels)},
+	overrideExtLabels := qs.db.OverrideExtLabels()
+	if overrideExtLabels.Len() > 0 {
+		extLabels := overrideExtLabels
+		mint, maxt := qs.db.Timerange()
+
+		return &infopb.InfoResponse{
+			ComponentType: component.Query.String(),
+			LabelSets:     zLabelSetsFromPromLabels(extLabels),
+			Store: &infopb.StoreInfo{
+				MinTime:                      mint,
+				MaxTime:                      maxt,
+				SupportsWithoutReplicaLabels: true,
+				TsdbInfos: []infopb.TSDBInfo{
+					{
+						MinTime: mint,
+						MaxTime: maxt,
+						Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(overrideExtLabels)},
+					},
 				},
 			},
+			Query: &infopb.QueryAPIInfo{},
+		}, nil
+	}
+
+	blockStreams := qs.db.BlockStreams()
+
+	mint, maxt := int64(math.MaxInt64), int64(math.MinInt64)
+
+	tsdbInfos := make([]infopb.TSDBInfo, 0, len(blockStreams))
+	allLabelSets := make([]labels.Labels, 0, len(blockStreams))
+
+	streamHashes := make([]uint64, 0, len(blockStreams))
+	for h := range blockStreams {
+		streamHashes = append(streamHashes, uint64(h))
+	}
+	slices.Sort(streamHashes)
+
+	for _, sth := range streamHashes {
+		sti := blockStreams[schema.ExternalLabelsHash(sth)]
+
+		mint = min(mint, sti.MinT)
+		maxt = max(maxt, sti.MaxT)
+
+		lbls := labels.FromMap(sti.Labels)
+		allLabelSets = append(allLabelSets, lbls)
+
+		tsdbInfos = append(tsdbInfos, infopb.TSDBInfo{
+			MinTime: sti.MinT,
+			MaxTime: sti.MaxT,
+			Labels:  labelpb.ZLabelSet{Labels: zLabelsFromMetric(lbls)},
+		})
+	}
+
+	return &infopb.InfoResponse{
+		ComponentType: component.Query.String(),
+		LabelSets:     zLabelSetsFromPromLabels(allLabelSets...),
+		Store: &infopb.StoreInfo{
+			MinTime:   mint,
+			MaxTime:   maxt,
+			TsdbInfos: tsdbInfos,
 		},
 		Query: &infopb.QueryAPIInfo{},
 	}, nil
@@ -178,9 +263,7 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	}
 	if warnings := res.Warnings.AsErrors(); len(warnings) > 0 {
 		errs := make([]error, 0, len(warnings))
-		for _, warning := range warnings {
-			errs = append(errs, warning)
-		}
+		errs = append(errs, warnings...)
 		if err = srv.SendMsg(querypb.NewQueryWarningsResponse(errs...)); err != nil {
 			return err
 		}
@@ -242,9 +325,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	}
 	if warnings := res.Warnings.AsErrors(); len(warnings) > 0 {
 		errs := make([]error, 0, len(warnings))
-		for _, warning := range warnings {
-			errs = append(errs, warning)
-		}
+		errs = append(errs, warnings...)
 		if err = srv.SendMsg(querypb.NewQueryWarningsResponse(errs...)); err != nil {
 			return err
 		}
@@ -305,6 +386,9 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 
 	cq, err := qryable.ChunkQuerier(request.MinTime, request.MaxTime)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, cq.Close, "chunk querier close")
@@ -385,6 +469,9 @@ func chunkEncToStoreEnc(enc chunkenc.Encoding) storepb.Chunk_Encoding {
 func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNamesRequest) (_ *storepb.LabelNamesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, q.Close, "querier close")
@@ -407,6 +494,9 @@ func (qs *QueryServer) LabelNames(ctx context.Context, request *storepb.LabelNam
 func (qs *QueryServer) LabelValues(ctx context.Context, request *storepb.LabelValuesRequest) (_ *storepb.LabelValuesResponse, rerr error) {
 	q, err := qs.queryable(request.WithoutReplicaLabels...).Querier(request.Start, request.End)
 	if err != nil {
+		if limits.IsResourceExhausted(err) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	defer errcapture.Do(&rerr, q.Close, "querier close")

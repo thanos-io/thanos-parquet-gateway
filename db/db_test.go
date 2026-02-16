@@ -23,6 +23,7 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/prometheus/prometheus/util/testutil"
+	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 var (
@@ -98,7 +100,7 @@ func (st *acceptanceTestStorage) Querier(from, to int64) (storage.Querier, error
 		// parquet-go panics when writing an empty parquet file
 		return st.st.Querier(from, to)
 	}
-	return storageToDB(st.tb, st.st).Queryable().Querier(from, to)
+	return storageToDB(st.tb, st.st, schema.ExternalLabels{}).Queryable().Querier(from, to)
 }
 
 func (st *acceptanceTestStorage) Close() error {
@@ -116,9 +118,9 @@ func TestSelect(t *testing.T) {
     jkl{ext="doesntmatter1"} 1
     jkl{ext="doesntmatter2"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -182,9 +184,9 @@ func TestLabelNames(t *testing.T) {
     foo{bar="baz"} 1
     abc{def="ghi"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -212,14 +214,13 @@ func TestLabelNames(t *testing.T) {
 			want:     []string{"__name__", "def", "ext"},
 		},
 	} {
-		t.Run("", func(tt *testing.T) {
-			res, _, err := qry.LabelNames(tt.Context(), &storage.LabelHints{}, tc.matchers...)
-			if err != nil {
-				tt.Fatalf("unable to query label names: %s", err)
+		t.Run("", func(t *testing.T) {
+			res, _, err := qry.LabelNames(t.Context(), &storage.LabelHints{}, tc.matchers...)
+			require.NoError(t, err)
+			if tc.want == nil {
+				tc.want = []string{}
 			}
-			if !slices.Equal(tc.want, res) {
-				tt.Fatalf("expected %q, got %q", tc.want, res)
-			}
+			require.Equal(t, tc.want, res)
 		})
 	}
 }
@@ -229,9 +230,9 @@ func TestLabelValues(t *testing.T) {
     foo{bar="baz"} 1
     abc{ext="internal"} 1
     `)
-	t.Cleanup(func() { ts.Close() })
+	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, db.ExternalLabels(labels.FromStrings("ext", "test", "rep", "1")))
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -308,7 +309,7 @@ func TestLabelValues(t *testing.T) {
 func TestInstantQuery(t *testing.T) {
 	defaultQueryTime := time.Unix(50, 0)
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	cases := []struct {
 		load      string
@@ -319,26 +320,26 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "vector selector with empty matcher on nonexistent column",
 			load: `load 10s
-			    metric{pod="nginx-1", a=""} 1+2x40`,
+			    metric{pod="nginx-1", a="", testdb="db1"} 1+2x40`,
 			queries: []string{`metric{foo=""}`},
 		},
 		{
 			name: "vector selector with empty labels",
 			load: `load 10s
-			    metric{pod="nginx-1", a=""} 1+2x40`,
+			    metric{pod="nginx-1", a="", testdb="db1"} 1+2x40`,
 			queries: []string{`metric`},
 		},
 		{
 			name: "vector selector with different labelnames",
 			load: `load 10s
-			    metric{pod="nginx-1", a="foo"} 1+1x40
-			    metric{pod="nginx-1", b="bar"} 1+1x40`,
+			    metric{pod="nginx-1", a="foo", testdb="db1"} 1+1x40
+			    metric{pod="nginx-1", b="bar", testdb="db1"} 1+1x40`,
 			queries: []string{`metric`},
 		},
 		{
 			name: "float histogram",
 			load: `load 5m
-				http_requests_histogram{job="api-server", instance="3", group="canary"} {{schema:2 count:4 sum:10 buckets:[1 0 0 0 1 0 0 1 1]}}`,
+				http_requests_histogram{job="api-server", instance="3", group="canary", testdb="db1"} {{schema:2 count:4 sum:10 buckets:[1 0 0 0 1 0 0 1 1]}}`,
 			queries: []string{
 				`max(http_requests_histogram)`,
 				`min(http_requests_histogram)`,
@@ -347,98 +348,98 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "vector selector with many labels",
 			load: `load 10s
-			    metric{pod="nginx-1", a="b", c="d", e="f"} 1+1x40`,
+			    metric{pod="nginx-1", a="b", c="d", e="f", testdb="db1"} 1+1x40`,
 			queries: []string{`metric`},
 		},
 		{
 			name: "vector selector with many not equal comparison",
 			load: `load 10s
-			    metric{pod="nginx-1", a="b", c="d", e="f"} 1+1x40`,
+			    metric{pod="nginx-1", a="b", c="d", e="f", testdb="db1"} 1+1x40`,
 			queries: []string{`metric{a!="a",c!="c"}`},
 		},
 		{
 			name: "vector selector with regex selector",
 			load: `load 10s
-			    metric{pod="nginx-1", a="foo"} 1+1x40
-			    metric{pod="nginx-1", a="bar"} 1+1x40`,
+			    metric{pod="nginx-1", a="foo", testdb="db1"} 1+1x40
+			    metric{pod="nginx-1", a="bar", testdb="db1"} 1+1x40`,
 			queries: []string{`metric{a=~"f.*"}`},
 		},
 		{
 			name: "vector selector with not regex selector",
 			load: `load 10s
-                metric{pod="nginx-1", a="foo"} 1+1x40
-                metric{pod="nginx-1", a="bar"} 1+1x40`,
+                metric{pod="nginx-1", a="foo", testdb="db1"} 1+1x40
+                metric{pod="nginx-1", a="bar", testdb="db1"} 1+1x40`,
 			queries: []string{`metric{a!~"f.*"}`},
 		},
 		{
 			name: "vector selector with not equal selector on unknown column",
 			load: `load 10s
-                metric{pod="nginx-1"} 1+1x40
-                metric{pod="nginx-1"} 1+1x40`,
+                metric{pod="nginx-1", testdb="db1"} 1+1x40
+                metric{pod="nginx-1", testdb="db1"} 1+1x40`,
 			queries: []string{`metric{a!~"f.*"}`},
 		},
 		{
 			name: "sum with by grouping",
 			load: `load 10s
-                metric{pod="nginx-1", a="foo"} 1+1x40
-                metric{pod="nginx-2", a="bar"} 1+1x40
-                metric{pod="nginx-1", a="bar"} 1+1x40`,
+                metric{pod="nginx-1", a="foo", testdb="db1"} 1+1x40
+                metric{pod="nginx-2", a="bar", testdb="db1"} 1+1x40
+                metric{pod="nginx-1", a="bar", testdb="db1"} 1+1x40`,
 			queries: []string{`sum by (a) (metric)`},
 		},
 		{
 			name: "sum with without grouping",
 			load: `load 10s
-                metric{pod="nginx-1", a="foo"} 1+1x40
-                metric{pod="nginx-2", a="bar"} 1+1x40
-                metric{pod="nginx-1", a="bar"} 1+1x40`,
+                metric{pod="nginx-1", a="foo", testdb="db1"} 1+1x40
+                metric{pod="nginx-2", a="bar", testdb="db1"} 1+1x40
+                metric{pod="nginx-1", a="bar", testdb="db1"} 1+1x40`,
 			queries: []string{`sum without (a) (metric)`},
 		},
 		{
 			name: "sum_over_time with subquery",
 			load: `load 10s
-			    metric{pod="nginx-1", series="1"} 1+1x40
-			    metric{pod="nginx-2", series="2"} 2+2x50
-			    metric{pod="nginx-4", series="3"} 5+2x50
-			    metric{pod="nginx-5", series="1"} 8+4x50
-			    metric{pod="nginx-6", series="2"} 2+3x50`,
+			    metric{pod="nginx-1", series="1", testdb="db1"} 1+1x40
+			    metric{pod="nginx-2", series="2", testdb="db1"} 2+2x50
+			    metric{pod="nginx-4", series="3", testdb="db1"} 5+2x50
+			    metric{pod="nginx-5", series="1", testdb="db1"} 8+4x50
+			    metric{pod="nginx-6", series="2", testdb="db1"} 2+3x50`,
 			queryTime: time.Unix(600, 0),
 			queries:   []string{`sum_over_time(sum by (series) (x)[5m:1m])`},
 		},
 		{
 			name: "",
 			load: `load 10s
-			    data{test="ten",point="a"} 2
-				data{test="ten",point="b"} 8
-				data{test="ten",point="c"} 1e+100
-				data{test="ten",point="d"} -1e100
-				data{test="pos_inf",group="1",point="a"} Inf
-				data{test="pos_inf",group="1",point="b"} 2
-				data{test="pos_inf",group="2",point="a"} 2
-				data{test="pos_inf",group="2",point="b"} Inf
-				data{test="neg_inf",group="1",point="a"} -Inf
-				data{test="neg_inf",group="1",point="b"} 2
-				data{test="neg_inf",group="2",point="a"} 2
-				data{test="neg_inf",group="2",point="b"} -Inf
-				data{test="inf_inf",point="a"} Inf
-				data{test="inf_inf",point="b"} -Inf
-				data{test="nan",group="1",point="a"} NaN
-				data{test="nan",group="1",point="b"} 2
-				data{test="nan",group="2",point="a"} 2
-				data{test="nan",group="2",point="b"} NaN`,
+			    data{test="ten",point="a", testdb="db1"} 2
+				data{test="ten",point="b", testdb="db1"} 8
+				data{test="ten",point="c", testdb="db1"} 1e+100
+				data{test="ten",point="d", testdb="db1"} -1e100
+				data{test="pos_inf",group="1",point="a", testdb="db1"} Inf
+				data{test="pos_inf",group="1",point="b", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="a", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="b", testdb="db1"} Inf
+				data{test="neg_inf",group="1",point="a", testdb="db1"} -Inf
+				data{test="neg_inf",group="1",point="b", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="a", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="b", testdb="db1"} -Inf
+				data{test="inf_inf",point="a", testdb="db1"} Inf
+				data{test="inf_inf",point="b", testdb="db1"} -Inf
+				data{test="nan",group="1",point="a", testdb="db1"} NaN
+				data{test="nan",group="1",point="b", testdb="db1"} 2
+				data{test="nan",group="2",point="a", testdb="db1"} 2
+				data{test="nan",group="2",point="b", testdb="db1"} NaN`,
 			queryTime: time.Unix(60, 0),
 			queries:   []string{`sum(data{test="ten"})`},
 		},
 		{
 			name: "",
 			load: `load 5m
-				http_requests{job="api-server", instance="0", group="production"} 0+10x10
-				http_requests{job="api-server", instance="1", group="production"} 0+20x10
-				http_requests{job="api-server", instance="0", group="canary"}   0+30x10
-				http_requests{job="api-server", instance="1", group="canary"}   0+40x10
-				http_requests{job="app-server", instance="0", group="production"} 0+50x10
-				http_requests{job="app-server", instance="1", group="production"} 0+60x10
-				http_requests{job="app-server", instance="0", group="canary"}   0+70x10
-				http_requests{job="app-server", instance="1", group="canary"}   0+80x10`,
+				http_requests{job="api-server", instance="0", group="production", testdb="db1"} 0+10x10
+				http_requests{job="api-server", instance="1", group="production", testdb="db1"} 0+20x10
+				http_requests{job="api-server", instance="0", group="canary", testdb="db1"}   0+30x10
+				http_requests{job="api-server", instance="1", group="canary", testdb="db1"}   0+40x10
+				http_requests{job="app-server", instance="0", group="production", testdb="db1"} 0+50x10
+				http_requests{job="app-server", instance="1", group="production", testdb="db1"} 0+60x10
+				http_requests{job="app-server", instance="0", group="canary", testdb="db1"}   0+70x10
+				http_requests{job="app-server", instance="1", group="canary", testdb="db1"}   0+80x10`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`SUM BY (group) (http_requests{job="api-server"})`,
@@ -487,9 +488,9 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				http_requests{job="api-server", instance="0", group="production"} 0+1.33x10
-				http_requests{job="api-server", instance="1", group="production"} 0+1.33x10
-				http_requests{job="api-server", instance="0", group="canary"} 0+1.33x10`,
+				http_requests{job="api-server", instance="0", group="production", testdb="db1"} 0+1.33x10
+				http_requests{job="api-server", instance="1", group="production", testdb="db1"} 0+1.33x10
+				http_requests{job="api-server", instance="0", group="canary", testdb="db1"} 0+1.33x10`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`stddev(http_requests)`,
@@ -499,8 +500,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				label_grouping_test{a="aa", b="bb"} 0+10x10
-				label_grouping_test{a="a", b="abb"} 0+20x10`,
+				label_grouping_test{a="aa", b="bb", testdb="db1"} 0+10x10
+				label_grouping_test{a="a", b="abb", testdb="db1"} 0+20x10`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`sum(label_grouping_test) by (a, b)`,
@@ -509,8 +510,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				label_grouping_test{a="aa", b="bb"} 0+10x10
-				label_grouping_test{a="a", b="abb"} 0+20x10`,
+				label_grouping_test{a="aa", b="bb", testdb="db1"} 0+10x10
+				label_grouping_test{a="a", b="abb", testdb="db1"} 0+20x10`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`sum(label_grouping_test) by (a, b)`,
@@ -519,11 +520,11 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				http_requests{job="api-server", instance="0", group="production"}	1
-				http_requests{job="api-server", instance="1", group="production"}	2
-				http_requests{job="api-server", instance="0", group="canary"}		NaN
-				http_requests{job="api-server", instance="1", group="canary"}		3
-				http_requests{job="api-server", instance="2", group="canary"}		4
+				http_requests{job="api-server", instance="0", group="production", testdb="db1"}	1
+				http_requests{job="api-server", instance="1", group="production", testdb="db1"}	2
+				http_requests{job="api-server", instance="0", group="canary", testdb="db1"}		NaN
+				http_requests{job="api-server", instance="1", group="canary", testdb="db1"}		3
+				http_requests{job="api-server", instance="2", group="canary", testdb="db1"}		4
 				http_requests_histogram{job="api-server", instance="3", group="canary"} {{schema:2 count:4 sum:10 buckets:[1 0 0 0 1 0 0 1 1]}}`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
@@ -536,15 +537,15 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				http_requests{job="api-server", instance="0", group="production"}	0+10x10
-				http_requests{job="api-server", instance="1", group="production"}	0+20x10
-				http_requests{job="api-server", instance="2", group="production"}	NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN
-				http_requests{job="api-server", instance="0", group="canary"}		0+30x10
-				http_requests{job="api-server", instance="1", group="canary"}		0+40x10
-				http_requests{job="app-server", instance="0", group="production"}	0+50x10
-				http_requests{job="app-server", instance="1", group="production"}	0+60x10
-				http_requests{job="app-server", instance="0", group="canary"}		0+70x10
-				http_requests{job="app-server", instance="1", group="canary"}		0+80x10
+				http_requests{job="api-server", instance="0", group="production", testdb="db1"}	0+10x10
+				http_requests{job="api-server", instance="1", group="production", testdb="db1"}	0+20x10
+				http_requests{job="api-server", instance="2", group="production", testdb="db1"}	NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN NaN
+				http_requests{job="api-server", instance="0", group="canary", testdb="db1"}		0+30x10
+				http_requests{job="api-server", instance="1", group="canary", testdb="db1"}		0+40x10
+				http_requests{job="app-server", instance="0", group="production", testdb="db1"}	0+50x10
+				http_requests{job="app-server", instance="1", group="production", testdb="db1"}	0+60x10
+				http_requests{job="app-server", instance="0", group="canary", testdb="db1"}		0+70x10
+				http_requests{job="app-server", instance="1", group="canary", testdb="db1"}		0+80x10
 				foo 3+0x10`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
@@ -566,17 +567,17 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				version{job="api-server", instance="0", group="production"}	6
-				version{job="api-server", instance="1", group="production"}	6
-				version{job="api-server", instance="2", group="production"}	6
-				version{job="api-server", instance="0", group="canary"}		8
-				version{job="api-server", instance="1", group="canary"}		8
-				version{job="app-server", instance="0", group="production"}	6
-				version{job="app-server", instance="1", group="production"}	6
-				version{job="app-server", instance="0", group="canary"}		7
-				version{job="app-server", instance="1", group="canary"}		7
-				version{job="app-server", instance="2", group="canary"}		{{schema:0 sum:10 count:20 z_bucket_w:0.001 z_bucket:2 buckets:[1 2] n_buckets:[1 2]}}
-				version{job="app-server", instance="3", group="canary"}		{{schema:0 sum:10 count:20 z_bucket_w:0.001 z_bucket:2 buckets:[1 2] n_buckets:[1 2]}}`,
+				version{job="api-server", instance="0", group="production", testdb="db1"}	6
+				version{job="api-server", instance="1", group="production", testdb="db1"}	6
+				version{job="api-server", instance="2", group="production", testdb="db1"}	6
+				version{job="api-server", instance="0", group="canary", testdb="db1"}		8
+				version{job="api-server", instance="1", group="canary", testdb="db1"}		8
+				version{job="app-server", instance="0", group="production", testdb="db1"}	6
+				version{job="app-server", instance="1", group="production", testdb="db1"}	6
+				version{job="app-server", instance="0", group="canary", testdb="db1"}		7
+				version{job="app-server", instance="1", group="canary", testdb="db1"}		7
+				version{job="app-server", instance="2", group="canary", testdb="db1"}		{{schema:0 sum:10 count:20 z_bucket_w:0.001 z_bucket:2 buckets:[1 2] n_buckets:[1 2]}}
+				version{job="app-server", instance="3", group="canary", testdb="db1"}		{{schema:0 sum:10 count:20 z_bucket_w:0.001 z_bucket:2 buckets:[1 2] n_buckets:[1 2]}}`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
 				`count_values("version", version)`,
@@ -589,15 +590,15 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 10s
-				data{test="two samples",point="a"} 0
-				data{test="two samples",point="b"} 1
-				data{test="three samples",point="a"} 0
-				data{test="three samples",point="b"} 1
-				data{test="three samples",point="c"} 2
-				data{test="uneven samples",point="a"} 0
-				data{test="uneven samples",point="b"} 1
-				data{test="uneven samples",point="c"} 4
-				data_histogram{test="histogram sample", point="c"} {{schema:2 count:4 sum:10 buckets:[1 0 0 0 1 0 0 1 1]}}
+				data{test="two samples",point="a", testdb="db1"} 0
+				data{test="two samples",point="b", testdb="db1"} 1
+				data{test="three samples",point="a", testdb="db1"} 0
+				data{test="three samples",point="b", testdb="db1"} 1
+				data{test="three samples",point="c", testdb="db1"} 2
+				data{test="uneven samples",point="a", testdb="db1"} 0
+				data{test="uneven samples",point="b", testdb="db1"} 1
+				data{test="uneven samples",point="c", testdb="db1"} 4
+				data_histogram{test="histogram sample", point="c", testdb="db1"} {{schema:2 count:4 sum:10 buckets:[1 0 0 0 1 0 0 1 1]}}
 				foo .8`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
@@ -611,15 +612,15 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 10s
-				data{test="two samples",point="a"} 0
-				data{test="two samples",point="b"} 1
-				data{test="three samples",point="a"} 0
-				data{test="three samples",point="b"} 1
-				data{test="three samples",point="c"} 2
-				data{test="uneven samples",point="a"} 0
-				data{test="uneven samples",point="b"} 1
-				data{test="uneven samples",point="c"} 4
-				data{test="histogram sample",point="c"} {{schema:0 sum:0 count:0}}
+				data{test="two samples",point="a", testdb="db1"} 0
+				data{test="two samples",point="b", testdb="db1"} 1
+				data{test="three samples",point="a", testdb="db1"} 0
+				data{test="three samples",point="b", testdb="db1"} 1
+				data{test="three samples",point="c", testdb="db1"} 2
+				data{test="uneven samples",point="a", testdb="db1"} 0
+				data{test="uneven samples",point="b", testdb="db1"} 1
+				data{test="uneven samples",point="c", testdb="db1"} 4
+				data{test="histogram sample",point="c", testdb="db1"} {{schema:0 sum:0 count:0}}
 				foo .8`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
@@ -630,45 +631,45 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 10s
-				data{test="ten",point="a"} 8
-				data{test="ten",point="b"} 10
-				data{test="ten",point="c"} 12
-				data{test="inf",point="a"} 0
-				data{test="inf",point="b"} Inf
-				data{test="inf",point="d"} Inf
-				data{test="inf",point="c"} 0
-				data{test="-inf",point="a"} -Inf
-				data{test="-inf",point="b"} -Inf
-				data{test="-inf",point="c"} 0
-				data{test="inf2",point="a"} Inf
-				data{test="inf2",point="b"} 0
-				data{test="inf2",point="c"} Inf
-				data{test="-inf2",point="a"} -Inf
-				data{test="-inf2",point="b"} 0
-				data{test="-inf2",point="c"} -Inf
-				data{test="inf3",point="b"} Inf
-				data{test="inf3",point="d"} Inf
-				data{test="inf3",point="c"} Inf
-				data{test="inf3",point="d"} -Inf
-				data{test="-inf3",point="b"} -Inf
-				data{test="-inf3",point="d"} -Inf
-				data{test="-inf3",point="c"} -Inf
-				data{test="-inf3",point="c"} Inf
-				data{test="nan",point="a"} -Inf
-				data{test="nan",point="b"} 0
-				data{test="nan",point="c"} Inf
-				data{test="big",point="a"} 9.988465674311579e+307
-				data{test="big",point="b"} 9.988465674311579e+307
-				data{test="big",point="c"} 9.988465674311579e+307
-				data{test="big",point="d"} 9.988465674311579e+307
-				data{test="-big",point="a"} -9.988465674311579e+307
-				data{test="-big",point="b"} -9.988465674311579e+307
-				data{test="-big",point="c"} -9.988465674311579e+307
-				data{test="-big",point="d"} -9.988465674311579e+307
-				data{test="bigzero",point="a"} -9.988465674311579e+307
-				data{test="bigzero",point="b"} -9.988465674311579e+307
-				data{test="bigzero",point="c"} 9.988465674311579e+307
-				data{test="bigzero",point="d"} 9.988465674311579e+307`,
+				data{test="ten",point="a", testdb="db1"} 8
+				data{test="ten",point="b", testdb="db1"} 10
+				data{test="ten",point="c", testdb="db1"} 12
+				data{test="inf",point="a", testdb="db1"} 0
+				data{test="inf",point="b", testdb="db1"} Inf
+				data{test="inf",point="d", testdb="db1"} Inf
+				data{test="inf",point="c", testdb="db1"} 0
+				data{test="-inf",point="a", testdb="db1"} -Inf
+				data{test="-inf",point="b", testdb="db1"} -Inf
+				data{test="-inf",point="c", testdb="db1"} 0
+				data{test="inf2",point="a", testdb="db1"} Inf
+				data{test="inf2",point="b", testdb="db1"} 0
+				data{test="inf2",point="c", testdb="db1"} Inf
+				data{test="-inf2",point="a", testdb="db1"} -Inf
+				data{test="-inf2",point="b", testdb="db1"} 0
+				data{test="-inf2",point="c", testdb="db1"} -Inf
+				data{test="inf3",point="b", testdb="db1"} Inf
+				data{test="inf3",point="d", testdb="db1"} Inf
+				data{test="inf3",point="c", testdb="db1"} Inf
+				data{test="inf3",point="d", testdb="db1"} -Inf
+				data{test="-inf3",point="b", testdb="db1"} -Inf
+				data{test="-inf3",point="d", testdb="db1"} -Inf
+				data{test="-inf3",point="c", testdb="db1"} -Inf
+				data{test="-inf3",point="c", testdb="db1"} Inf
+				data{test="nan",point="a", testdb="db1"} -Inf
+				data{test="nan",point="b", testdb="db1"} 0
+				data{test="nan",point="c", testdb="db1"} Inf
+				data{test="big",point="a", testdb="db1"} 9.988465674311579e+307
+				data{test="big",point="b", testdb="db1"} 9.988465674311579e+307
+				data{test="big",point="c", testdb="db1"} 9.988465674311579e+307
+				data{test="big",point="d", testdb="db1"} 9.988465674311579e+307
+				data{test="-big",point="a", testdb="db1"} -9.988465674311579e+307
+				data{test="-big",point="b", testdb="db1"} -9.988465674311579e+307
+				data{test="-big",point="c", testdb="db1"} -9.988465674311579e+307
+				data{test="-big",point="d", testdb="db1"} -9.988465674311579e+307
+				data{test="bigzero",point="a", testdb="db1"} -9.988465674311579e+307
+				data{test="bigzero",point="b", testdb="db1"} -9.988465674311579e+307
+				data{test="bigzero",point="c", testdb="db1"} 9.988465674311579e+307
+				data{test="bigzero",point="d", testdb="db1"} 9.988465674311579e+307`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
 				`avg(data{test="ten"})`,
@@ -687,24 +688,24 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 10s
-				data{test="ten",point="a"} 2
-				data{test="ten",point="b"} 8
-				data{test="ten",point="c"} 1e+100
-				data{test="ten",point="d"} -1e100
-				data{test="pos_inf",group="1",point="a"} Inf
-				data{test="pos_inf",group="1",point="b"} 2
-				data{test="pos_inf",group="2",point="a"} 2
-				data{test="pos_inf",group="2",point="b"} Inf
-				data{test="neg_inf",group="1",point="a"} -Inf
-				data{test="neg_inf",group="1",point="b"} 2
-				data{test="neg_inf",group="2",point="a"} 2
-				data{test="neg_inf",group="2",point="b"} -Inf
-				data{test="inf_inf",point="a"} Inf
-				data{test="inf_inf",point="b"} -Inf
-				data{test="nan",group="1",point="a"} NaN
-				data{test="nan",group="1",point="b"} 2
-				data{test="nan",group="2",point="a"} 2
-				data{test="nan",group="2",point="b"} NaN`,
+				data{test="ten",point="a", testdb="db1"} 2
+				data{test="ten",point="b", testdb="db1"} 8
+				data{test="ten",point="c", testdb="db1"} 1e+100
+				data{test="ten",point="d", testdb="db1"} -1e100
+				data{test="pos_inf",group="1",point="a", testdb="db1"} Inf
+				data{test="pos_inf",group="1",point="b", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="a", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="b", testdb="db1"} Inf
+				data{test="neg_inf",group="1",point="a", testdb="db1"} -Inf
+				data{test="neg_inf",group="1",point="b", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="a", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="b", testdb="db1"} -Inf
+				data{test="inf_inf",point="a", testdb="db1"} Inf
+				data{test="inf_inf",point="b", testdb="db1"} -Inf
+				data{test="nan",group="1",point="a", testdb="db1"} NaN
+				data{test="nan",group="1",point="b", testdb="db1"} 2
+				data{test="nan",group="2",point="a", testdb="db1"} 2
+				data{test="nan",group="2",point="b", testdb="db1"} NaN`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
 				`sum(data{test="ten"})`,
@@ -722,9 +723,9 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				series{label="a"} 1
-				series{label="b"} 2
-				series{label="c"} NaN`,
+				series{label="a", testdb="db1"} 1
+				series{label="b", testdb="db1"} 2
+				series{label="c", testdb="db1"} NaN`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
 				`stddev(series)`,
@@ -736,9 +737,9 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				series{label="a"} NaN
-				series{label="b"} 1
-				series{label="c"} 2`,
+				series{label="a", testdb="db1"} NaN
+				series{label="b", testdb="db1"} 1
+				series{label="c", testdb="db1"} 2`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
 				`stddev(series)`,
@@ -760,9 +761,9 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				series{label="a"} 1
-				series{label="b"} 2
-				series{label="c"} inf`,
+				series{label="a", testdb="db1"} 1
+				series{label="b", testdb="db1"} 2
+				series{label="c", testdb="db1"} inf`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
 				`stddev(series)`,
@@ -774,9 +775,9 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "",
 			load: `load 5m
-				series{label="a"} inf
-				series{label="b"} 1
-				series{label="c"} 2`,
+				series{label="a", testdb="db1"} inf
+				series{label="b", testdb="db1"} 1
+				series{label="c", testdb="db1"} 2`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
 				`stddev(series)`,
@@ -810,8 +811,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "duplicate labelset in promql output",
 			load: `load 5m
-				testmetric1{src="a",dst="b"} 0
-				testmetric2{src="a",dst="b"} 1`,
+				testmetric1{src="a",dst="b", testdb="db1"} 0
+				testmetric2{src="a",dst="b", testdb="db1"} 1`,
 			queryTime: time.Unix(0, 0),
 			queries: []string{
 				`ceil({__name__=~'testmetric1|testmetric2'})`,
@@ -820,20 +821,20 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "operators",
 			load: `load 5m
-				http_requests_total{job="api-server", instance="0", group="production"}	0+10x10
-				http_requests_total{job="api-server", instance="1", group="production"}	0+20x10
-				http_requests_total{job="api-server", instance="0", group="canary"}	0+30x10
-				http_requests_total{job="api-server", instance="1", group="canary"}	0+40x10
-				http_requests_total{job="app-server", instance="0", group="production"}	0+50x10
-				http_requests_total{job="app-server", instance="1", group="production"}	0+60x10
-				http_requests_total{job="app-server", instance="0", group="canary"}	0+70x10
-				http_requests_total{job="app-server", instance="1", group="canary"}	0+80x10
-				http_requests_histogram{job="app-server", instance="1", group="production"} {{schema:1 sum:15 count:10 buckets:[3 2 5 7 9]}}x11
+				http_requests_total{job="api-server", instance="0", group="production", testdb="db1"}	0+10x10
+				http_requests_total{job="api-server", instance="1", group="production", testdb="db1"}	0+20x10
+				http_requests_total{job="api-server", instance="0", group="canary", testdb="db1"}	0+30x10
+				http_requests_total{job="api-server", instance="1", group="canary", testdb="db1"}	0+40x10
+				http_requests_total{job="app-server", instance="0", group="production", testdb="db1"}	0+50x10
+				http_requests_total{job="app-server", instance="1", group="production", testdb="db1"}	0+60x10
+				http_requests_total{job="app-server", instance="0", group="canary", testdb="db1"}	0+70x10
+				http_requests_total{job="app-server", instance="1", group="canary", testdb="db1"}	0+80x10
+				http_requests_histogram{job="app-server", instance="1", group="production", testdb="db1"} {{schema:1 sum:15 count:10 buckets:[3 2 5 7 9]}}x11
 
 				load 5m
-					vector_matching_a{l="x"} 0+1x100
-					vector_matching_a{l="y"} 0+2x50
-					vector_matching_b{l="x"} 0+4x25`,
+					vector_matching_a{l="x", testdb="db1"} 0+1x100
+					vector_matching_a{l="y", testdb="db1"} 0+2x50
+					vector_matching_b{l="x", testdb="db1"} 0+4x25`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`SUM(http_requests_total) BY (job) - COUNT(http_requests_total) BY (job)`,
@@ -900,8 +901,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "wrong query time",
 			load: `load 5m
-				  node_var{instance="abc",job="node"} 2
-				  node_role{instance="abc",job="node",role="prometheus"} 1`,
+				  node_var{instance="abc",job="node", testdb="db1"} 2
+				  node_role{instance="abc",job="node",role="prometheus", testdb="db1"} 1`,
 			queryTime: time.Unix(3000, 0),
 			queries: []string{
 				`node_role * on (instance) group_right (role) node_var`,
@@ -910,20 +911,20 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "operators",
 			load: `load 5m
-				  node_var{instance="abc",job="node"} 2
-				  node_role{instance="abc",job="node",role="prometheus"} 1
+				  node_var{instance="abc",job="node", testdb="db1"} 2
+				  node_role{instance="abc",job="node",role="prometheus", testdb="db1"} 1
 
 				load 5m
-				  node_cpu{instance="abc",job="node",mode="idle"} 3
-				  node_cpu{instance="abc",job="node",mode="user"} 1
-				  node_cpu{instance="def",job="node",mode="idle"} 8
-				  node_cpu{instance="def",job="node",mode="user"} 2
+				  node_cpu{instance="abc",job="node",mode="idle", testdb="db1"} 3
+				  node_cpu{instance="abc",job="node",mode="user", testdb="db1"} 1
+				  node_cpu{instance="def",job="node",mode="idle", testdb="db1"} 8
+				  node_cpu{instance="def",job="node",mode="user", testdb="db1"} 2
 
 				load 5m
-				  random{foo="bar"} 1
+				  random{foo="bar", testdb="db1"} 1
 
 				load 5m
-				  threshold{instance="abc",job="node",target="a@b.com"} 0`,
+				  threshold{instance="abc",job="node",target="a@b.com", testdb="db1"} 0`,
 			queryTime: time.Unix(60, 0),
 			queries: []string{
 				`node_role * on (instance) group_right (role) node_var`,
@@ -953,8 +954,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "at_modifiers",
 			load: `load 10s
-				  metric{job="1"} 0+1x1000
-				  metric{job="2"} 0+2x1000
+				  metric{job="1", testdb="db1"} 0+1x1000
+				  metric{job="2", testdb="db1"} 0+2x1000
 
 				load 1ms
 				  metric_ms 0+1x10000`,
@@ -981,8 +982,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "at_modifiers",
 			load: `load 10s
-				  metric{job="1"} 0+1x1000
-				  metric{job="2"} 0+2x1000
+				  metric{job="1", testdb="db1"} 0+1x1000
+				  metric{job="2", testdb="db1"} 0+2x1000
 
 				load 1ms
 				  metric_ms 0+1x10000`,
@@ -1005,8 +1006,8 @@ func TestInstantQuery(t *testing.T) {
 		{
 			name: "at_modifiers",
 			load: `load 10s
-				  metric{job="1"} 0+1x1000
-				  metric{job="2"} 0+2x1000
+				  metric{job="1", testdb="db1"} 0+1x1000
+				  metric{job="2", testdb="db1"} 0+2x1000
 
 				load 1ms
 				  metric_ms 0+1x10000`,
@@ -1063,9 +1064,9 @@ func TestInstantQuery(t *testing.T) {
 
 			t.Parallel()
 			testStorage := promqltest.LoadedStorage(t, tc.load)
-			t.Cleanup(func() { testStorage.Close() })
+			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			database := storageToDB(t, testStorage)
+			database := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
 			ctx := context.Background()
 
 			for _, query := range tc.queries {
@@ -1099,7 +1100,7 @@ func TestInstantQuery(t *testing.T) {
 
 func TestRangeQuery(t *testing.T) {
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	type rangeQuery struct {
 		query      string
@@ -1115,7 +1116,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "sum_over_time with all values",
 			load: `load 15s
-				bar 0 1 10 100 1000`,
+				bar{testdb="db1"} 0 1 10 100 1000`,
 			queries: []rangeQuery{
 				{
 					query: `sum_over_time(bar[30s])`,
@@ -1128,7 +1129,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "sum_over_time with trailing values",
 			load: `load 15s
-				bar 0 1 10 100 1000 0 0 0 0`,
+				bar{testdb="db1"} 0 1 10 100 1000 0 0 0 0`,
 			queries: []rangeQuery{
 				{
 					query: `sum_over_time(bar[30s])`,
@@ -1141,7 +1142,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "sum_over_time with all values long",
 			load: `load 30s
-				bar 0 1 10 100 1000 10000 100000 1000000 10000000`,
+				bar{testdb="db1"} 0 1 10 100 1000 10000 100000 1000000 10000000`,
 			queries: []rangeQuery{
 				{
 					query: `sum_over_time(bar[30s])`,
@@ -1154,7 +1155,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "sum_over_time with all values random",
 			load: `load 15s
-				bar 5 17 42 2 7 905 51`,
+				bar{testdb="db1"} 5 17 42 2 7 905 51`,
 			queries: []rangeQuery{
 				{
 					query: `sum_over_time(bar[30s])`,
@@ -1167,7 +1168,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "metric query",
 			load: `load 30s
-				metric 1+1x4`,
+				metric{testdb="db1"} 1+1x4`,
 			queries: []rangeQuery{
 				{
 					query: `metric`,
@@ -1180,7 +1181,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "metric query with trailing values",
 			load: `load 30s
-				metric 1+1x8`,
+				metric{testdb="db1"} 1+1x8`,
 			queries: []rangeQuery{
 				{
 					query: `metric`,
@@ -1193,8 +1194,8 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "short-circuit",
 			load: `load 30s
-				foo{job="1"} 1+1x4
-				bar{job="2"} 1+1x4`,
+				foo{job="1", testdb="db1"} 1+1x4
+				bar{job="2", testdb="db1"} 1+1x4`,
 			queries: []rangeQuery{
 				{
 					query: `foo > 2 or bar`,
@@ -1207,7 +1208,7 @@ func TestRangeQuery(t *testing.T) {
 		{
 			name: "drop metric name",
 			load: `load 30s
-				requests{job="1", __address__="bar"} 100`,
+				requests{job="1", __address__="bar", testdb="db1"} 100`,
 			queries: []rangeQuery{
 				{
 					query: `requests * 2`,
@@ -1221,10 +1222,10 @@ func TestRangeQuery(t *testing.T) {
 			name: "empty and nonempty matchers",
 			load: `
         load 30s
-			    http_requests_total{pod="nginx-1", route="/"} 0+1x5
-			    http_requests_total{pod="nginx-2"} 0+2x5
-			    http_requests_total{pod="nginx-3", route="/"} 0+3x5
-			    http_requests_total{pod="nginx-4"} 0+4x5`,
+			    http_requests_total{pod="nginx-1", route="/", testdb="db1"} 0+1x5
+			    http_requests_total{pod="nginx-2", testdb="db1"} 0+2x5
+			    http_requests_total{pod="nginx-3", route="/", testdb="db1"} 0+3x5
+			    http_requests_total{pod="nginx-4", testdb="db1"} 0+4x5`,
 			queries: []rangeQuery{
 				{
 					query: `http_requests_total{route=""}`,
@@ -1269,9 +1270,9 @@ func TestRangeQuery(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			testStorage := promqltest.LoadedStorage(t, tc.load)
-			t.Cleanup(func() { testStorage.Close() })
+			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			db := storageToDB(t, testStorage)
+			db := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
 			ctx := t.Context()
 
 			for _, query := range tc.queries {
@@ -1304,26 +1305,28 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 
 	ctx := context.Background()
 	st := teststorage.New(t)
-	t.Cleanup(func() { st.Close() })
+	t.Cleanup(func() { require.NoError(t, st.Close()) })
 
 	bkt, err := filesystem.NewBucket(t.TempDir())
 	if err != nil {
 		t.Fatalf("unable to create bucket: %s", err)
 	}
-	t.Cleanup(func() { bkt.Close() })
+	t.Cleanup(func() { require.NoError(t, bkt.Close()) })
 
 	engine := promql.NewEngine(opts)
-	t.Cleanup(func() { engine.Close() })
+	t.Cleanup(func() { require.NoError(t, engine.Close()) })
 
 	app := st.Appender(ctx)
 	for i := range 100 {
-		app.Append(0, labels.FromStrings("__name__", "foo", "replica", "1", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
-		app.Append(0, labels.FromStrings("__name__", "foo", "replica", "2", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		_, err := app.Append(0, labels.FromStrings("__name__", "foo", "replica", "1", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		require.NoError(t, err)
+		_, err = app.Append(0, labels.FromStrings("__name__", "foo", "replica", "2", "bar", fmt.Sprintf("%d", 2*i)), 0, float64(i))
+		require.NoError(t, err)
 	}
 	if err := app.Commit(); err != nil {
 		t.Fatalf("unable to commit: %s", err)
 	}
-	database := storageToDB(t, st)
+	database := storageToDB(t, st, schema.ExternalLabels{"aa": "bb"})
 
 	expr := `foo{bar=~"0"}`
 
@@ -1349,34 +1352,31 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 	}
 }
 
-func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore.Bucket, opts ...db.DBOption) *db.DB {
+func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore.Bucket, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	ctx := context.Background()
 
-	h := st.DB.Head()
+	h := st.Head()
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	if err := convert.ConvertTSDBBlock(ctx, bkt, day, []convert.Convertible{&convert.HeadBlock{Head: h}}); err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
+	require.NoError(tb, convert.WriteStreamFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)
-	if err := discoverer.Discover(ctx); err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, discoverer.Discover(ctx))
+
 	syncer := locate.NewSyncer(bkt, locate.BlockOptions(locate.LabelFilesDir(tb.TempDir())))
-	if err := syncer.Sync(ctx, discoverer.Metas()); err != nil {
-		tb.Fatal(err)
-	}
+	require.NoError(tb, syncer.Sync(ctx, discoverer.Streams()))
+
 	return db.NewDB(syncer, opts...)
 }
 
-func storageToDB(tb testing.TB, st *teststorage.TestStorage, opts ...db.DBOption) *db.DB {
+func storageToDB(tb testing.TB, st *teststorage.TestStorage, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	bkt, err := filesystem.NewBucket(tb.TempDir())
 	if err != nil {
 		tb.Fatalf("unable to create bucket: %s", err)
 	}
-	return storageToDBWithBkt(tb, st, bkt, opts...)
+	return storageToDBWithBkt(tb, st, bkt, extLabels, opts...)
 
 }
 

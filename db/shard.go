@@ -25,9 +25,9 @@ import (
 )
 
 type Shard struct {
-	meta        schema.Meta
 	chunkspfile *parquet.File
 	labelspfile *parquet.File
+	meta        schema.Meta
 
 	chunkFileReaderFromCtx func(ctx context.Context) io.ReaderAt
 }
@@ -47,7 +47,7 @@ func NewShard(
 }
 
 func (shd *Shard) Queryable(
-	extlabels labels.Labels,
+	extLabels labels.Labels,
 	replicaLabelNames []string,
 	selectChunkBytesQuota *limits.Quota,
 	selectRowCountQuota *limits.Quota,
@@ -55,9 +55,11 @@ func (shd *Shard) Queryable(
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
 	selectHonorProjectionHints bool,
+	labelValuesRowCountQuota *limits.Quota,
+	labelNamesRowCountQuota *limits.Quota,
 ) *ShardQueryable {
 	return &ShardQueryable{
-		extlabels:                          extlabels,
+		extlabels:                          extLabels,
 		replicaLabelNames:                  replicaLabelNames,
 		selectChunkBytesQuota:              selectChunkBytesQuota,
 		selectRowCountQuota:                selectRowCountQuota,
@@ -65,6 +67,8 @@ func (shd *Shard) Queryable(
 		selectChunkPartitionMaxGap:         selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: selectChunkPartitionMaxConcurrency,
 		selectHonorProjectionHints:         selectHonorProjectionHints,
+		labelValuesRowCountQuota:           labelValuesRowCountQuota,
+		labelNamesRowCountQuota:            labelNamesRowCountQuota,
 		shard:                              shd,
 	}
 }
@@ -78,6 +82,8 @@ type ShardQueryable struct {
 	selectChunkPartitionMaxGap         uint64
 	selectChunkPartitionMaxConcurrency int
 	selectHonorProjectionHints         bool
+	labelValuesRowCountQuota           *limits.Quota
+	labelNamesRowCountQuota            *limits.Quota
 
 	shard *Shard
 }
@@ -95,6 +101,8 @@ func (q *ShardQueryable) Querier(mint, maxt int64) (*ShardQuerier, error) {
 		selectChunkPartitionMaxGap:         q.selectChunkPartitionMaxGap,
 		selectChunkPartitionMaxConcurrency: q.selectChunkPartitionMaxConcurrency,
 		selectHonorProjectionHints:         q.selectHonorProjectionHints,
+		labelValuesRowCountQuota:           q.labelValuesRowCountQuota,
+		labelNamesRowCountQuota:            q.labelNamesRowCountQuota,
 	}, nil
 }
 
@@ -108,6 +116,8 @@ type ShardQuerier struct {
 	selectChunkPartitionMaxGap         uint64
 	selectChunkPartitionMaxConcurrency int
 	selectHonorProjectionHints         bool
+	labelValuesRowCountQuota           *limits.Quota
+	labelNamesRowCountQuota            *limits.Quota
 
 	shard *Shard
 }
@@ -136,6 +146,7 @@ func (q ShardQuerier) LabelValues(ctx context.Context, name string, hints *stora
 		search.LabelValuesReadMeta{
 			Meta:              q.shard.meta,
 			LabelPfile:        q.shard.labelspfile,
+			RowCountQuota:     q.labelValuesRowCountQuota,
 			ExternalLabels:    q.extlabels,
 			ReplicaLabelNames: q.replicaLabelNames,
 		},
@@ -169,6 +180,7 @@ func (q ShardQuerier) LabelNames(ctx context.Context, hints *storage.LabelHints,
 		search.LabelNamesReadMeta{
 			Meta:              q.shard.meta,
 			LabelPfile:        q.shard.labelspfile,
+			RowCountQuota:     q.labelNamesRowCountQuota,
 			ExternalLabels:    q.extlabels,
 			ReplicaLabelNames: q.replicaLabelNames,
 		},

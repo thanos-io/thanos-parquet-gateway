@@ -9,17 +9,21 @@ import (
 )
 
 func NewDate(y int, m time.Month, d int) Date {
+	t := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+
 	return Date{
-		t: time.Date(y, m, d, 0, 0, 0, 0, time.UTC),
+		t:    t,
+		tstr: t.Format(time.DateOnly),
 	}
 }
 
 type Date struct {
-	t time.Time
+	t    time.Time
+	tstr string
 }
 
 func (d Date) String() string {
-	return d.t.Format(time.DateOnly)
+	return d.tstr
 }
 
 func (d Date) ToTime() time.Time {

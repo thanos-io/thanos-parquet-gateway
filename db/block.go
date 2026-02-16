@@ -25,12 +25,22 @@ import (
 )
 
 type Block struct {
-	meta   schema.Meta
-	shards []*Shard
+	meta          schema.Meta
+	shards        []*Shard
+	extLabels     schema.ExternalLabels
+	extPromLabels labels.Labels
 }
 
-func NewBlock(meta schema.Meta, shards ...*Shard) *Block {
-	return &Block{meta: meta, shards: shards}
+func NewBlock(meta schema.Meta, extLabels schema.ExternalLabels, shards ...*Shard) *Block {
+	return &Block{meta: meta, extLabels: extLabels, shards: shards, extPromLabels: labels.FromMap(extLabels)}
+}
+
+func (blk *Block) ExternalLabels() schema.ExternalLabels {
+	return blk.extLabels
+}
+
+func (blk *Block) ExternalPromLabels() labels.Labels {
+	return blk.extPromLabels
 }
 
 func (blk *Block) Meta() schema.Meta {
@@ -42,7 +52,7 @@ func (blk *Block) Timerange() (int64, int64) {
 }
 
 func (blk *Block) Queryable(
-	extlabels labels.Labels,
+	overrideExtLabels labels.Labels,
 	replicaLabelNames []string,
 	selectChunkBytesQuota *limits.Quota,
 	selectRowCountQuota *limits.Quota,
@@ -50,11 +60,17 @@ func (blk *Block) Queryable(
 	selectChunkPartitionMaxGap uint64,
 	selectChunkPartitionMaxConcurrency int,
 	selectHonorProjectionHints bool,
+	labelValuesRowCountQuota *limits.Quota,
+	labelNamesRowCountQuota *limits.Quota,
 ) *BlockQueryable {
 	qs := make([]*ShardQueryable, 0, len(blk.shards))
+	var extLabels = blk.ExternalPromLabels()
+	if overrideExtLabels.Len() > 0 {
+		extLabels = overrideExtLabels
+	}
 	for _, shard := range blk.shards {
 		qs = append(qs, shard.Queryable(
-			extlabels,
+			extLabels,
 			replicaLabelNames,
 			selectChunkBytesQuota,
 			selectRowCountQuota,
@@ -62,14 +78,14 @@ func (blk *Block) Queryable(
 			selectChunkPartitionMaxGap,
 			selectChunkPartitionMaxConcurrency,
 			selectHonorProjectionHints,
+			labelValuesRowCountQuota,
+			labelNamesRowCountQuota,
 		))
 	}
-	return &BlockQueryable{extlabels: extlabels, shards: qs}
+	return &BlockQueryable{shards: qs}
 }
 
 type BlockQueryable struct {
-	extlabels labels.Labels
-
 	shards []*ShardQueryable
 }
 

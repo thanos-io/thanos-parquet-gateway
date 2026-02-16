@@ -11,14 +11,16 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"regexp"
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/exporters/jaeger" //nolint:staticcheck
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/alecthomas/units"
 	"github.com/oklog/run"
@@ -47,6 +49,18 @@ type bucketOpts struct {
 	objStoreConfig     string
 }
 
+var envPat = regexp.MustCompile(`\$\(([A-Za-z_][A-Za-z0-9_]*)\)`)
+
+func ExpandEnvParens(b []byte) []byte {
+	return envPat.ReplaceAllFunc(b, func(m []byte) []byte {
+		sub := envPat.FindSubmatch(m)
+		if len(sub) != 2 {
+			return m
+		}
+		return []byte(os.Getenv(string(sub[1])))
+	})
+}
+
 func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 	var confContentYaml []byte
 	var err error
@@ -67,6 +81,8 @@ func setupBucket(log *slog.Logger, opts bucketOpts) (objstore.Bucket, error) {
 	if len(confContentYaml) == 0 {
 		return nil, fmt.Errorf("objstore config is required")
 	}
+
+	confContentYaml = ExpandEnvParens(confContentYaml)
 
 	bkt, err := client.NewBucket(slogAdapter{log}, confContentYaml, "parquet-gateway", nil)
 	if err != nil {
@@ -111,6 +127,9 @@ func setupTracing(ctx context.Context, opts tracingOpts) error {
 		if err != nil {
 			return err
 		}
+	case "":
+		otel.SetTracerProvider(noop.NewTracerProvider())
+		return nil
 	default:
 		return fmt.Errorf("invalid exporter type %s", opts.exporterType)
 	}
@@ -160,11 +179,11 @@ func setupInternalAPI(g *run.Group, log *slog.Logger, reg *prometheus.Registry, 
 
 	mux.HandleFunc("/-/healthy", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK")
+		_, _ = fmt.Fprintf(w, "OK")
 	})
 	mux.HandleFunc("/-/ready", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "OK")
+		_, _ = fmt.Fprintf(w, "OK")
 	})
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", opts.port), Handler: mux}
@@ -191,7 +210,7 @@ type discoveryOpts struct {
 }
 
 func setupDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, opts discoveryOpts) (*locate.Discoverer, error) {
-	discoverer := locate.NewDiscoverer(bkt, locate.MetaConcurrency(opts.discoveryConcurrency))
+	discoverer := locate.NewDiscoverer(bkt, locate.MetaConcurrency(opts.discoveryConcurrency), locate.Logger(log))
 
 	log.Info("Running initial discovery")
 
@@ -234,6 +253,7 @@ func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt
 		locate.TSDBMetaConcurrency(opts.discoveryConcurrency),
 		locate.TSDBMinBlockAge(opts.discoveryMinBlockAge),
 		locate.TSDBMatchExternalLabels(opts.externalLabelMatchers...),
+		locate.WithLogger(log),
 	)
 
 	log.Info("Running initial tsdb discovery")
@@ -327,7 +347,7 @@ func setupSyncer(ctx context.Context, g *run.Group, log *slog.Logger, bkt objsto
 
 	iterCtx, iterCancel := context.WithTimeout(ctx, opts.syncerInterval)
 	defer iterCancel()
-	if err := syncer.Sync(iterCtx, discoverer.Metas()); err != nil {
+	if err := syncer.Sync(iterCtx, discoverer.Streams()); err != nil {
 		return nil, fmt.Errorf("unable to run initial sync: %w", err)
 	}
 
@@ -338,7 +358,7 @@ func setupSyncer(ctx context.Context, g *run.Group, log *slog.Logger, bkt objsto
 
 			iterCtx, iterCancel := context.WithTimeout(ctx, opts.syncerInterval)
 			defer iterCancel()
-			if err := syncer.Sync(iterCtx, discoverer.Metas()); err != nil {
+			if err := syncer.Sync(iterCtx, discoverer.Streams()); err != nil {
 				log.Warn("Unable to sync new blocks", slog.Any("err", err))
 			}
 			return nil

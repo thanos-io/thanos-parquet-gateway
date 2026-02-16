@@ -16,8 +16,10 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/util/teststorage"
+	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 	"go.uber.org/goleak"
 )
 
@@ -57,7 +59,7 @@ func BenchmarkSelect(b *testing.B) {
 
 	for k, qc := range map[string]queryableCreate{
 		"parquet": func(tb testing.TB, bkt objstore.Bucket, st *teststorage.TestStorage) storage.Queryable {
-			return storageToDBWithBkt(tb, st, bkt).Queryable()
+			return storageToDBWithBkt(tb, st, bkt, schema.ExternalLabels{}).Queryable()
 		},
 		"prometheus": func(_ testing.TB, _ objstore.Bucket, st *teststorage.TestStorage) storage.Queryable {
 			return st
@@ -77,7 +79,8 @@ func BenchmarkSelect(b *testing.B) {
 				app := st.Appender(b.Context())
 				for i := range 10_000 {
 					for _, sc := range []string{"200", "202", "300", "404", "400", "429", "500", "503"} {
-						app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
+						_, err := app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
+						require.NoError(b, err)
 					}
 				}
 				if err := app.Commit(); err != nil {
@@ -174,7 +177,8 @@ func BenchmarkSelect(b *testing.B) {
 												"service", fmt.Sprintf("service-%d", s),
 												"environment", fmt.Sprintf("environment-%d", e),
 											)
-											app.Append(0, lbls, 0, rand.Float64())
+											_, err := app.Append(0, lbls, 0, rand.Float64())
+											require.NoError(b, err)
 											seriesCount++
 										}
 									}
