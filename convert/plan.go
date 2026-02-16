@@ -55,7 +55,7 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream,	minOffset time.Duration,maxOffset time.Duration) Plan  {
+func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream, minOffset time.Duration, maxOffset time.Duration) Plan {
 
 	var (
 		windowActive bool
@@ -153,7 +153,7 @@ func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.Parquet
 	return Plan{Steps: steps}
 }
 
-func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) Plan {
+func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, minOffset time.Duration, maxOffset time.Duration) Plan {
 	outPlan := Plan{Steps: []Step{}}
 
 	for tsdbEH := range tsdbStreams {
@@ -162,7 +162,7 @@ func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlock
 			parquet = schema.ParquetBlocksStream{}
 		}
 
-		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet)
+		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet, minOffset, maxOffset)
 		for i := range streamPlan.Steps {
 			streamPlan.Steps[i].ExternalLabels = tsdbStreams[tsdbEH].ExternalLabels
 		}
