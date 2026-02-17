@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"math"
@@ -17,22 +16,17 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/proto"
-
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 	"github.com/thanos-io/thanos/pkg/compact/downsample"
 
+	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
-	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
-	"github.com/thanos-io/thanos-parquet-gateway/proto/streampb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
-
-var bufPool sync.Pool
 
 type discoveryConfig struct {
 	concurrency int
@@ -169,7 +163,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 			continue
 		}
 		p.Go(func(ctx context.Context) error {
-			sd, err := readStreamDescriptorFile(ctx, s.bkt, discoveredHash, s.l)
+			sd, err := convert.ReadStreamDescriptorFile(ctx, s.bkt, discoveredHash, s.l)
 			if err != nil {
 				return fmt.Errorf("unable to read stream descriptor for hash %q: %w", discoveredHash.String(), err)
 			}
@@ -209,7 +203,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 	for discoveredHash := range futureBlocks {
 		for blockDate := range futureBlocks[discoveredHash].filesByDate {
 			p.Go(func(ctx context.Context) error {
-				meta, err := readMetaFile(ctx, s.bkt, blockDate, discoveredHash, s.l)
+				meta, err := convert.ReadMetaFile(ctx, s.bkt, blockDate, discoveredHash, s.l)
 				if err != nil {
 					return fmt.Errorf("unable to read meta file for block date %q hash %q: %w", blockDate, discoveredHash.String(), err)
 				}
@@ -261,110 +255,6 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 	syncLastSuccessfulTime.WithLabelValues(whatDiscoverer).SetToCurrentTime()
 
 	return nil
-}
-
-func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
-	sdfile := schema.StreamDescriptorFileNameForBlock(extLabelsHash)
-	attrs, err := bkt.Attributes(ctx, sdfile)
-	if err != nil {
-		return schema.StreamDescriptor{}, fmt.Errorf("unable to attr %s: %w", sdfile, err)
-	}
-	rdr, err := bkt.Get(ctx, sdfile)
-	if err != nil {
-		return schema.StreamDescriptor{}, fmt.Errorf("unable to get %s: %w", sdfile, err)
-	}
-	defer slogerrcapture.Do(l, rdr.Close, "closing stream descriptor file reader %s", sdfile)
-
-	bp, ok := bufPool.Get().(*[]byte)
-	if !ok {
-		b := make([]byte, 0, attrs.Size)
-		bp = &b
-	}
-	defer bufPool.Put(bp)
-
-	buf := *bp
-	if cap(buf) < int(attrs.Size) {
-		buf = make([]byte, attrs.Size)
-		*bp = buf
-	} else {
-		buf = buf[:attrs.Size]
-	}
-	*bp = buf
-
-	if _, err := io.ReadFull(rdr, buf); err != nil {
-		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
-	}
-
-	metapb := &streampb.StreamDescriptor{}
-	if err := proto.Unmarshal(buf, metapb); err != nil {
-		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
-	}
-
-	if len(metapb.GetExternalLabels()) == 0 {
-		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has no external labels", sdfile)
-	}
-
-	extLbls := schema.ExternalLabels(metapb.GetExternalLabels())
-	if extLbls.Hash() != extLabelsHash {
-		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has invalid external labels hash: got %d, want %d", sdfile, extLbls.Hash(), extLabelsHash)
-	}
-
-	return schema.StreamDescriptor{
-		ExternalLabels: metapb.GetExternalLabels(),
-	}, nil
-}
-
-func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.Meta, error) {
-	mfile := schema.MetaFileNameForBlock(date, extLabelsHash)
-	attrs, err := bkt.Attributes(ctx, mfile)
-	if err != nil {
-		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
-	}
-
-	rdr, err := bkt.Get(ctx, mfile)
-	if err != nil {
-		return schema.Meta{}, fmt.Errorf("unable to get %s: %w", mfile, err)
-	}
-	defer slogerrcapture.Do(l, rdr.Close, "closing meta file reader %s", mfile)
-
-	bp, ok := bufPool.Get().(*[]byte)
-	if !ok {
-		b := make([]byte, 0, attrs.Size)
-		bp = &b
-	}
-	defer bufPool.Put(bp)
-
-	buf := *bp
-	if cap(buf) < int(attrs.Size) {
-		buf = make([]byte, attrs.Size)
-		*bp = buf
-	} else {
-		buf = buf[:attrs.Size]
-	}
-	*bp = buf
-
-	if _, err := io.ReadFull(rdr, buf); err != nil {
-		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
-	}
-
-	metapb := &metapb.Metadata{}
-	if err := proto.Unmarshal(buf, metapb); err != nil {
-		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
-	}
-
-	// for version == 0
-	m := make(map[string][]string, len(metapb.GetColumnsForName()))
-	for k, v := range metapb.GetColumnsForName() {
-		m[k] = v.GetColumns()
-	}
-	return schema.Meta{
-		Version:        int(metapb.GetVersion()),
-		Date:           date,
-		Mint:           metapb.GetMint(),
-		Maxt:           metapb.GetMaxt(),
-		Shards:         metapb.GetShards(),
-		ColumnsForName: m,
-	}, nil
 }
 
 type tsdbDiscoveryConfig struct {

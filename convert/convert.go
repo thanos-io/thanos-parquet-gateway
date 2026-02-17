@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"math"
 	"slices"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
@@ -32,11 +34,14 @@ import (
 	"github.com/thanos-io/objstore"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/metapb"
 	"github.com/thanos-io/thanos-parquet-gateway/proto/streampb"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
+
+var bufPool sync.Pool
 
 type Convertible interface {
 	Index() (tsdb.IndexReader, error)
@@ -153,20 +158,104 @@ func WriteConcurrency(c int) ConvertOption {
 	}
 }
 
-func WriteStreamFile(
-	ctx context.Context,
-	bkt objstore.Bucket,
-	extLabels schema.ExternalLabels,
-) error {
-	var descriptor = streampb.StreamDescriptor{
-		ExternalLabels: extLabels,
+func ReadStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
+	sdfile := schema.StreamDescriptorFileNameForBlock(extLabelsHash)
+	attrs, err := bkt.Attributes(ctx, sdfile)
+	if err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to attr %s: %w", sdfile, err)
+	}
+	rdr, err := bkt.Get(ctx, sdfile)
+	if err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to get %s: %w", sdfile, err)
+	}
+	defer slogerrcapture.Do(l, rdr.Close, "closing stream descriptor file reader %s", sdfile)
+
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
+	defer bufPool.Put(bp)
+
+	buf := *bp
+	if cap(buf) < int(attrs.Size) {
+		buf = make([]byte, attrs.Size)
+		*bp = buf
+	} else {
+		buf = buf[:attrs.Size]
+	}
+	*bp = buf
+
+	if _, err := io.ReadFull(rdr, buf); err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
 	}
 
-	data, err := proto.Marshal(&descriptor)
+	metapb := &streampb.StreamDescriptor{}
+	if err := proto.Unmarshal(buf, metapb); err != nil {
+		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
+	}
+
+	if len(metapb.GetExternalLabels()) == 0 {
+		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has no external labels", sdfile)
+	}
+
+	extLbls := schema.ExternalLabels(metapb.GetExternalLabels())
+	if extLbls.Hash() != extLabelsHash {
+		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has invalid external labels hash: got %d, want %d", sdfile, extLbls.Hash(), extLabelsHash)
+	}
+
+	return schema.StreamDescriptor{
+		ExternalLabels: metapb.GetExternalLabels(),
+	}, nil
+}
+
+func WriteStreamDescriptorFile(
+	ctx context.Context,
+	log *slog.Logger,
+	bkt objstore.Bucket,
+	extLabels schema.ExternalLabels,
+	streamHashMap map[schema.ExternalLabelsHash]schema.ExternalLabels,
+) error {
+	extLabelHash := extLabels.Hash()
+	filename := schema.StreamDescriptorFileNameForBlock(extLabelHash)
+
+	// Checking for hash collisions:
+	// If a discovered stream has different labels than the new stream with the same hash
+	// we panic. If it has the same labels, we can just return nil as it is already uploaded.
+	//
+	// If a new stream is being written, it won't be in the streamHashMap so we still need to
+	// 1. Check if it exists in the bucket in case another converter uploaded after we called
+	// discoverer.Streams()
+	// 2a. If stream file does not exist, just upload.
+	// 2b. If stream file exists and labels are not equal - panic, otherwise,
+	// proceed with the upload.
+	if foundExtLabels, ok := streamHashMap[extLabelHash]; ok {
+		if !maps.Equal(extLabels, foundExtLabels) {
+			panic("BUG: possible hash collision found while uploading stream file")
+		}
+
+		return nil
+	}
+
+	exists, err := bkt.Exists(ctx, filename)
+	if err != nil {
+		return fmt.Errorf("failed to check if file exists in bucket: %w", err)
+	}
+	if exists {
+		sdfile, err := ReadStreamDescriptorFile(ctx, bkt, extLabelHash, log)
+		if err != nil {
+			return fmt.Errorf("failed to read stream descriptor from bucket: %w", err)
+		}
+		if !maps.Equal(sdfile.ExternalLabels, extLabels) {
+			panic("BUG: possible hash collision found while uploading stream file")
+		}
+	}
+
+	data, err := proto.Marshal(&streampb.StreamDescriptor{ExternalLabels: extLabels})
 	if err != nil {
 		return err
 	}
-	return bkt.Upload(ctx, schema.StreamDescriptorFileNameForBlock(extLabels.Hash()), bytes.NewReader(data))
+	return bkt.Upload(ctx, filename, bytes.NewReader(data))
 }
 
 func ConvertTSDBBlock(
@@ -256,6 +345,59 @@ type blockSeries struct {
 	seriesIdx int // index of the series in the block postings
 	ref       storage.SeriesRef
 	labels    labels.Labels
+}
+
+func ReadMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.Meta, error) {
+	mfile := schema.MetaFileNameForBlock(date, extLabelsHash)
+	attrs, err := bkt.Attributes(ctx, mfile)
+	if err != nil {
+		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
+	}
+
+	rdr, err := bkt.Get(ctx, mfile)
+	if err != nil {
+		return schema.Meta{}, fmt.Errorf("unable to get %s: %w", mfile, err)
+	}
+	defer slogerrcapture.Do(l, rdr.Close, "closing meta file reader %s", mfile)
+
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
+	defer bufPool.Put(bp)
+
+	buf := *bp
+	if cap(buf) < int(attrs.Size) {
+		buf = make([]byte, attrs.Size)
+		*bp = buf
+	} else {
+		buf = buf[:attrs.Size]
+	}
+	*bp = buf
+
+	if _, err := io.ReadFull(rdr, buf); err != nil {
+		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
+	}
+
+	metapb := &metapb.Metadata{}
+	if err := proto.Unmarshal(buf, metapb); err != nil {
+		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
+	}
+
+	// for version == 0
+	m := make(map[string][]string, len(metapb.GetColumnsForName()))
+	for k, v := range metapb.GetColumnsForName() {
+		m[k] = v.GetColumns()
+	}
+	return schema.Meta{
+		Version:        int(metapb.GetVersion()),
+		Date:           date,
+		Mint:           metapb.GetMint(),
+		Maxt:           metapb.GetMaxt(),
+		Shards:         metapb.GetShards(),
+		ColumnsForName: m,
+	}, nil
 }
 
 func writeMetaFile(ctx context.Context, day util.Date, extLabelsHash schema.ExternalLabelsHash, numShards int64, bkt objstore.Bucket) error {

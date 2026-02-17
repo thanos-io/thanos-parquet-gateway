@@ -29,6 +29,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type convertOpts struct {
@@ -200,6 +201,11 @@ func advanceConversion(
 	parquetStreams := parquetDiscoverer.Streams()
 	tsdbMetas := tsdbDiscoverer.Streams()
 
+	streamHashMap := make(map[schema.ExternalLabelsHash]schema.ExternalLabels)
+	for _, discoveredStream := range parquetStreams {
+		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
+	}
+
 	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
@@ -262,7 +268,9 @@ func advanceConversion(
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
 		}
-		if err := convert.WriteStreamFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
+		streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
+
+		if err := convert.WriteStreamDescriptorFile(ctx, log, parquetBkt, step.ExternalLabels, streamHashMap); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to write stream file: %w", err)
 		}
