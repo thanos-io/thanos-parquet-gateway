@@ -82,7 +82,9 @@ func (s *streamingRangeReader) Close() error {
 	return nil
 }
 
-func (s *streamingRangeReader) ReadAt(p []byte, _ int64) (int, error) {
+// ReadAt wraps an io.Reader as an io.ReaderAt for sequential only access (offsets must increase).
+// parquet-go's PagesFrom requires io.ReaderAt and doesn't support streaming reads directly.
+func (s *streamingRangeReader) ReadAt(p []byte, off int64) (int, error) {
 	if s.stream == nil {
 		rangeSize := s.maxOffset - s.minOffset
 		rc, err := s.bkt.GetRange(s.ctx, s.name, s.minOffset, rangeSize)
@@ -91,6 +93,10 @@ func (s *streamingRangeReader) ReadAt(p []byte, _ int64) (int, error) {
 		}
 		s.stream = rc
 		s.streamOffset = s.minOffset
+	}
+
+	if off != s.streamOffset {
+		panic(fmt.Sprintf("offsets should only be increasing. non-sequential read at offset %d, expected %d", off, s.streamOffset))
 	}
 
 	n, err := s.stream.Read(p)
