@@ -32,6 +32,8 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
+var bufPool sync.Pool
+
 type discoveryConfig struct {
 	concurrency int
 	l           *slog.Logger
@@ -263,7 +265,8 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 
 func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
 	sdfile := schema.StreamDescriptorFileNameForBlock(extLabelsHash)
-	if _, err := bkt.Attributes(ctx, sdfile); err != nil {
+	attrs, err := bkt.Attributes(ctx, sdfile)
+	if err != nil {
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to attr %s: %w", sdfile, err)
 	}
 	rdr, err := bkt.Get(ctx, sdfile)
@@ -272,13 +275,28 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 	}
 	defer slogerrcapture.Do(l, rdr.Close, "closing stream descriptor file reader %s", sdfile)
 
-	metaBytes, err := io.ReadAll(rdr)
-	if err != nil {
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
+	defer bufPool.Put(bp)
+
+	buf := *bp
+	if cap(buf) < int(attrs.Size) {
+		buf = make([]byte, attrs.Size)
+		*bp = buf
+	} else {
+		buf = buf[:attrs.Size]
+	}
+	*bp = buf
+
+	if _, err := io.ReadFull(rdr, buf); err != nil {
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
 	}
 
 	metapb := &streampb.StreamDescriptor{}
-	if err := proto.Unmarshal(metaBytes, metapb); err != nil {
+	if err := proto.Unmarshal(buf, metapb); err != nil {
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
 	}
 
@@ -298,22 +316,39 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 
 func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.Meta, error) {
 	mfile := schema.MetaFileNameForBlock(date, extLabelsHash)
-	if _, err := bkt.Attributes(ctx, mfile); err != nil {
+	attrs, err := bkt.Attributes(ctx, mfile)
+	if err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to attr %s: %w", mfile, err)
 	}
+
 	rdr, err := bkt.Get(ctx, mfile)
 	if err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to get %s: %w", mfile, err)
 	}
 	defer slogerrcapture.Do(l, rdr.Close, "closing meta file reader %s", mfile)
 
-	metaBytes, err := io.ReadAll(rdr)
-	if err != nil {
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
+	defer bufPool.Put(bp)
+
+	buf := *bp
+	if cap(buf) < int(attrs.Size) {
+		buf = make([]byte, attrs.Size)
+		*bp = buf
+	} else {
+		buf = buf[:attrs.Size]
+	}
+	*bp = buf
+
+	if _, err := io.ReadFull(rdr, buf); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
 	}
 
 	metapb := &metapb.Metadata{}
-	if err := proto.Unmarshal(metaBytes, metapb); err != nil {
+	if err := proto.Unmarshal(buf, metapb); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
 	}
 
