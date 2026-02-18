@@ -715,12 +715,13 @@ func materializeChunkColumn(ctx context.Context, rg parquet.RowGroup, cc parquet
 			minOffset := oidx.Offset(p.pages[0])
 			maxOffset := oidx.Offset(p.pages[len(p.pages)-1]) + oidx.CompressedPageSize(p.pages[len(p.pages)-1])
 
-			bufRdrAt := newBufferedReaderAt(rdrAt, minOffset, maxOffset)
+			streamRdrAt := newStreamingReaderAt(rdrAt, minOffset, maxOffset)
+			defer errcapture.Do(&rerr, streamRdrAt.(io.Closer).Close, "streaming reader close")
 
 			pagesRead.WithLabelValues(column, method).Add(float64(len(p.pages)))
 			pagesReadSize.WithLabelValues(column, method).Add(float64(maxOffset - minOffset))
 
-			pgs := cc.(*parquet.FileColumnChunk).PagesFrom(bufRdrAt)
+			pgs := cc.(*parquet.FileColumnChunk).PagesFrom(streamRdrAt)
 			defer errcapture.Do(&rerr, pgs.Close, "column chunk pages close")
 
 			if err := pgs.SeekToRow(p.rows[0].from); err != nil {
@@ -1032,28 +1033,11 @@ func (vi *chunkValuesIterator) At() parquet.Value {
 	return vi.buffer[vi.currentBufferIndex].Clone()
 }
 
-type bufferedReaderAt struct {
-	r      io.ReaderAt
-	b      []byte
-	offset int64
+type streamingRangeProvider interface {
+	io.ReaderAt
+	GetStreamingRange(minOffset, maxOffset int64) io.ReaderAt
 }
 
-func (b bufferedReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
-	if off >= b.offset && off < b.offset+int64(len(b.b)) {
-		diff := off - b.offset
-		n := copy(p, b.b[diff:])
-		return n, nil
-	}
-	return b.r.ReadAt(p, off)
-}
-
-func newBufferedReaderAt(r io.ReaderAt, minOffset, maxOffset int64) io.ReaderAt {
-	if minOffset < maxOffset {
-		b := make([]byte, maxOffset-minOffset)
-		n, err := r.ReadAt(b, minOffset)
-		if err == nil {
-			return &bufferedReaderAt{r: r, b: b[:n], offset: minOffset}
-		}
-	}
-	return r
+func newStreamingReaderAt(r io.ReaderAt, minOffset, maxOffset int64) io.ReaderAt {
+	return r.(streamingRangeProvider).GetStreamingRange(minOffset, maxOffset)
 }
