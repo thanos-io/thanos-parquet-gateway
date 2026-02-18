@@ -32,12 +32,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
-var bufPool = sync.Pool{
-	New: func() any {
-		b := make([]byte, 0, 4096)
-		return &b
-	},
-}
+var bufPool sync.Pool
 
 type discoveryConfig struct {
 	concurrency int
@@ -280,7 +275,11 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 	}
 	defer slogerrcapture.Do(l, rdr.Close, "closing stream descriptor file reader %s", sdfile)
 
-	bp := bufPool.Get().(*[]byte)
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
 	defer bufPool.Put(bp)
 
 	buf := *bp
@@ -290,11 +289,7 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 	} else {
 		buf = buf[:attrs.Size]
 	}
-
-	_, err = io.ReadFull(rdr, buf)
-	if err != nil {
-		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
-	}
+	*bp = buf
 
 	if _, err := io.ReadFull(rdr, buf); err != nil {
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
@@ -332,7 +327,11 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extL
 	}
 	defer slogerrcapture.Do(l, rdr.Close, "closing meta file reader %s", mfile)
 
-	bp := bufPool.Get().(*[]byte)
+	bp, ok := bufPool.Get().(*[]byte)
+	if !ok {
+		b := make([]byte, 0, attrs.Size)
+		bp = &b
+	}
 	defer bufPool.Put(bp)
 
 	buf := *bp
@@ -342,6 +341,7 @@ func readMetaFile(ctx context.Context, bkt objstore.Bucket, date util.Date, extL
 	} else {
 		buf = buf[:attrs.Size]
 	}
+	*bp = buf
 
 	if _, err := io.ReadFull(rdr, buf); err != nil {
 		return schema.Meta{}, fmt.Errorf("unable to read %s: %w", mfile, err)
