@@ -284,10 +284,11 @@ func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt
 }
 
 type syncerOpts struct {
-	syncerInterval       time.Duration
-	syncerConcurrency    int
-	syncerReadBufferSize units.Base2Bytes
-	syncerLabelFilesDir  string
+	syncerInterval         time.Duration
+	syncerConcurrency      int
+	syncerReadBufferSize   units.Base2Bytes
+	syncerLabelFilesDir    string
+	syncerShardConcurrency int
 
 	filterType                         string
 	filterThanosBackfillEndpoint       string
@@ -337,6 +338,7 @@ func setupSyncer(ctx context.Context, g *run.Group, log *slog.Logger, bkt objsto
 		bkt,
 		locate.FilterMetas(metaFilter),
 		locate.BlockConcurrency(opts.syncerConcurrency),
+		locate.ShardConcurrency(opts.syncerShardConcurrency),
 		locate.BlockOptions(
 			locate.ReadBufferSize(opts.syncerReadBufferSize),
 			locate.LabelFilesDir(opts.syncerLabelFilesDir),
