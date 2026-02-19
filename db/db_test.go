@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
 	"github.com/thanos-io/objstore/providers/filesystem"
+	"github.com/oklog/ulid/v2"
 
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/db"
@@ -1359,7 +1360,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h, OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}))
 	require.NoError(tb, convert.WriteStreamFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)

@@ -10,6 +10,7 @@ message Metadata {
   int64 shards = 3;
   map<string, Columns> columnsForName = 4;
   int64 version = 5;
+  repeated string convertedFromBLIDs = 6;
 }
 
 message Columns {

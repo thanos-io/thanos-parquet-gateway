@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/oklog/ulid/v2"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos/pkg/block/metadata"
 )
@@ -89,11 +90,12 @@ type TSDBBlocksStream struct {
 }
 
 type Meta struct {
-	Version        int
-	Date           util.Date
-	Mint, Maxt     int64
-	Shards         int64
-	ColumnsForName map[string][]string
+	Version            int
+	Date               util.Date
+	Mint, Maxt         int64
+	Shards             int64
+	ColumnsForName     map[string][]string
+	ConvertedFromBLIDs map[ulid.ULID]struct{}
 }
 
 var blockPathRE = regexp.MustCompile(
