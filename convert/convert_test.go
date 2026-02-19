@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-package convert
+package convert_test
 
 import (
 	"bytes"
@@ -24,6 +24,7 @@ import (
 	"github.com/thanos-io/objstore/providers/filesystem"
 	"go.uber.org/goleak"
 
+	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -64,13 +65,13 @@ func TestConverter(t *testing.T) {
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	opts := []ConvertOption{
-		SortBy(labels.MetricName),
-		RowGroupSize(250),
-		RowGroupCount(2),
-		LabelPageBufferSize(units.KiB), // results in 2 pages
+	opts := []convert.ConvertOption{
+		convert.SortBy(labels.MetricName),
+		convert.RowGroupSize(250),
+		convert.RowGroupCount(2),
+		convert.LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+	if err := convert.ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []convert.Convertible{&convert.HeadBlock{Head: h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -159,11 +160,11 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	opts := []ConvertOption{
-		SortBy(labels.MetricName),
-		LabelPageBufferSize(units.KiB), // results in 2 pages
+	opts := []convert.ConvertOption{
+		convert.SortBy(labels.MetricName),
+		convert.LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
+	if err := convert.ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []convert.Convertible{&convert.HeadBlock{h}}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }

@@ -1360,7 +1360,7 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
 	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
-	require.NoError(tb, convert.WriteStreamFile(ctx, bkt, extLabels))
+	require.NoError(tb, convert.WriteStreamDescriptorFile(ctx, nil, bkt, extLabels, map[schema.ExternalLabelsHash]schema.ExternalLabels{}))
 
 	discoverer := locate.NewDiscoverer(bkt)
 	require.NoError(tb, discoverer.Discover(ctx))
