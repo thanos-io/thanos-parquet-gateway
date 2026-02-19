@@ -268,12 +268,12 @@ func advanceConversion(
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
 		}
-		streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
 
 		if err := convert.WriteStreamDescriptorFile(ctx, log, parquetBkt, step.ExternalLabels, streamHashMap); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to write stream file: %w", err)
 		}
+		streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
 		log.Info("Conversion completed", slog.String("date", step.Date.String()))
 
 		prevBlocks = stepBlocks
