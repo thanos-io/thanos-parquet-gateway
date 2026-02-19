@@ -55,19 +55,59 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream) Plan {
+func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream, minOffset time.Duration, maxOffset time.Duration) Plan {
+
+	var (
+		windowActive bool
+		winStartDay  time.Time
+		winEndDay    time.Time
+	)
+
+	if minOffset != 0 || maxOffset != 0 {
+		windowActive = true
+		now := time.Now()
+
+		if minOffset != 0 {
+			t := now.Add(minOffset).UTC()
+			winStartDay = util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+		}
+
+		if maxOffset != 0 {
+			t := now.Add(maxOffset).UTC()
+			dateTime := util.NewDate(t.Year(), t.Month(), t.Day()).ToTime()
+			winEndDay = dateTime.AddDate(0, 0, 1)
+		}
+	}
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
 	for _, tsdb := range tsdb.Metas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
 
-	// Make a list of days covered by parquet blocks.
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquet.Metas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minOffset != 0 && pt.Before(winStartDay) {
+					continue
+				}
+				if maxOffset != 0 && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			pqDates[partialDate] = struct{}{}
 		}
 	}
@@ -113,7 +153,7 @@ func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.Parquet
 	return Plan{Steps: steps}
 }
 
-func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) Plan {
+func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, minOffset time.Duration, maxOffset time.Duration) Plan {
 	outPlan := Plan{Steps: []Step{}}
 
 	for tsdbEH := range tsdbStreams {
@@ -122,7 +162,7 @@ func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlock
 			parquet = schema.ParquetBlocksStream{}
 		}
 
-		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet)
+		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet, minOffset, maxOffset)
 		for i := range streamPlan.Steps {
 			streamPlan.Steps[i].ExternalLabels = tsdbStreams[tsdbEH].ExternalLabels
 		}
