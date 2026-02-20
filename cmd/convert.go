@@ -451,6 +451,14 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 	return res, nil
 }
 
+var copyPool = sync.Pool{
+	New: func() any {
+		const sz = 32 * 1024
+		buf := make([]byte, sz)
+		return &buf
+	},
+}
+
 func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts, l *slog.Logger) error {
 	src := meta.ULID.String()
 	dst := filepath.Join(blkDir, src)
@@ -521,7 +529,12 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 					if err != nil {
 						return fmt.Errorf("unable to create file %q: %w", fileDst, err)
 					}
-					if _, err := io.Copy(f, rc); err != nil {
+
+					b := copyPool.Get().(*[]byte)
+					*b = (*b)[:cap(*b)]
+					defer copyPool.Put(b)
+
+					if _, err := io.CopyBuffer(f, rc, *b); err != nil {
 						return fmt.Errorf("unable to copy file %q: %w", fileDst, err)
 					}
 					return nil
