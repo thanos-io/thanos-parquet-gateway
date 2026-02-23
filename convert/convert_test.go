@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math/rand"
 	"slices"
 	"strconv"
 	"testing"
@@ -31,6 +32,32 @@ import (
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
+}
+
+func BenchmarkConverter(b *testing.B) {
+	bkt, err := filesystem.NewBucket(b.TempDir())
+	require.NoError(b, err)
+	b.Cleanup(func() { require.NoError(b, bkt.Close()) })
+	st := teststorage.New(b)
+	b.Cleanup(func() { require.NoError(b, st.Close()) })
+	app := st.Appender(b.Context())
+	for i := range 10_000 {
+		for _, sc := range []string{"200", "202", "300", "404", "400", "429", "500", "503"} {
+			_, err := app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
+			require.NoError(b, err)
+		}
+	}
+	require.NoError(b, app.Commit())
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		h := st.Head()
+		ts := time.UnixMilli(h.MinTime()).UTC()
+		day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
+		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{&HeadBlock{Head: h}}))
+	}
 }
 
 func TestConverter(t *testing.T) {
