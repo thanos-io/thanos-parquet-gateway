@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type convertOpts struct {
@@ -203,6 +205,11 @@ func advanceConversion(
 	parquetStreams := parquetDiscoverer.Streams()
 	tsdbMetas := tsdbDiscoverer.Streams()
 
+	streamHashMap := make(map[schema.ExternalLabelsHash]schema.ExternalLabels)
+	for _, discoveredStream := range parquetStreams {
+		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
+	}
+
 	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams,opts.minTimeOffset, opts.maxTimeOffset)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
@@ -265,10 +272,50 @@ func advanceConversion(
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
 		}
-		if err := convert.WriteStreamFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
+
+		// Checking for hash collisions:
+		// If a discovered stream has different labels than the new stream with the same hash
+		// we panic. If it has the same labels, we can just return nil as it is already uploaded.
+		//
+		// If a new stream is being written, it won't be in the streamHashMap so we still need to
+		// 1. Check if it exists in the bucket in case another converter uploaded after we called
+		// discoverer.Streams()
+		// 2a. If stream file does not exist, just upload.
+		// 2b. If stream file exists and labels are not equal - panic, otherwise,
+		// proceed with the upload.
+		extLabelHash := step.ExternalLabels.Hash()
+		filename := schema.StreamDescriptorFileNameForBlock(extLabelHash)
+		if foundExtLabels, ok := streamHashMap[extLabelHash]; ok {
+			if !maps.Equal(step.ExternalLabels, foundExtLabels) {
+				panic("BUG/TODO: possible hash collision found while uploading stream file; we do not handle this at the moment")
+			}
+
+			streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
+			log.Info("Conversion completed", slog.String("date", step.Date.String()))
+
+			prevBlocks = stepBlocks
+			continue
+		}
+
+		exists, err := parquetBkt.Exists(ctx, filename)
+		if err != nil {
+			return fmt.Errorf("failed to check if file exists in bucket: %w", err)
+		}
+		if exists {
+			sdfile, err := locate.ReadStreamDescriptorFile(ctx, parquetBkt, extLabelHash, log)
+			if err != nil {
+				return fmt.Errorf("failed to read stream descriptor from bucket: %w", err)
+			}
+			if !maps.Equal(sdfile.ExternalLabels, step.ExternalLabels) {
+				panic("BUG/TODO: hash collision found while uploading stream file; we do not handle this at the moment")
+			}
+		}
+
+		if err := convert.WriteStreamDescriptorFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to write stream file: %w", err)
 		}
+		streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
 		log.Info("Conversion completed", slog.String("date", step.Date.String()))
 
 		prevBlocks = stepBlocks
@@ -359,40 +406,60 @@ func ulidsFromConvertible(blocks []convert.Convertible) []string {
 }
 
 func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(opts.blockDownloadConcurrency)
+	metaCh := make(chan metadata.Meta, len(metas))
 
-	mu := sync.Mutex{}
-	res := make([]convert.Convertible, 0)
 	for _, m := range metas {
+		select {
+		case metaCh <- m:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	close(metaCh)
+
+	g, ctx := errgroup.WithContext(ctx)
+	mu := sync.Mutex{}
+	res := make([]convert.Convertible, 0, len(metas))
+
+	for range opts.blockDownloadConcurrency {
 		g.Go(func() error {
-			src := m.ULID.String()
-			dst := filepath.Join(blkDir, src)
+			for m := range metaCh {
+				src := m.ULID.String()
+				dst := filepath.Join(blkDir, src)
 
-			log.Debug("block download start", "ulid", src)
+				log.Debug("block download start", "ulid", src)
 
-			if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
-				return downloadBlock(ctx, bkt, m, blkDir, opts, log)
-			}); err != nil {
-				return fmt.Errorf("unable to download block %q: %w", src, err)
+				if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
+					return downloadBlock(ctx, bkt, m, blkDir, opts, log)
+				}); err != nil {
+					return fmt.Errorf("unable to download block %q: %w", src, err)
+				}
+				blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
+				if err != nil {
+					return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
+				}
+				mu.Lock()
+				res = append(res, blk)
+				mu.Unlock()
+
+				log.Debug("block download complete", "ulid", src)
 			}
-			blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
-			if err != nil {
-				return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
-			}
-			mu.Lock()
-			res = append(res, blk)
-			mu.Unlock()
-
-			log.Debug("block download complete", "ulid", src)
 			return nil
-
 		})
 	}
+
 	if err := g.Wait(); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+var copyPool = sync.Pool{
+	New: func() any {
+		const sz = 32 * 1024
+		buf := make([]byte, sz)
+		return &buf
+	},
 }
 
 func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts, l *slog.Logger) error {
@@ -416,47 +483,72 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 	}
 
 	// we reimplement download dir from objstore to skip the cleanup part on partial downloads
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(opts.downloadConcurrency)
+	objPathCh := make(chan string)
 
-	err := bkt.Iter(ctx, src, func(name string) error {
-		g.Go(func() error {
-			dst := filepath.Join(dst, strings.TrimPrefix(name, src))
-			if strings.HasSuffix(name, objstore.DirDelim) {
-				return nil
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer close(objPathCh)
+		err := bkt.Iter(ctx, src, func(objPath string) error {
+			select {
+			case objPathCh <- objPath:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			// In case the previous upload failed we dont download the files that have the correct size.
-			// Size is not the best indicator, but its good enough. ideally we would want a hash but we
-			// dont write those currently.
-			// If the file was corrupted, then opening the block will very likely fail anyway.
-			if stat, err := os.Stat(dst); err == nil {
-				if known, ok := fmap[strings.TrimPrefix(name, src+objstore.DirDelim)]; ok {
-					if stat.Size() == known.SizeBytes && stat.Size() != 0 {
-						return nil
+			return nil
+		}, objstore.WithRecursiveIter())
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	})
+
+	for range opts.downloadConcurrency {
+		g.Go(func() error {
+			for name := range objPathCh {
+				fileDst := filepath.Join(dst, strings.TrimPrefix(name, src))
+				if strings.HasSuffix(name, objstore.DirDelim) {
+					continue
+				}
+				// In case the previous upload failed we dont download the files that have the correct size.
+				// Size is not the best indicator, but its good enough. ideally we would want a hash but we
+				// dont write those currently.
+				// If the file was corrupted, then opening the block will very likely fail anyway.
+				if stat, err := os.Stat(fileDst); err == nil {
+					if known, ok := fmap[strings.TrimPrefix(name, src+objstore.DirDelim)]; ok {
+						if stat.Size() == known.SizeBytes && stat.Size() != 0 {
+							continue
+						}
 					}
 				}
-			}
 
-			rc, err := bkt.Get(ctx, name)
-			if err != nil {
-				return fmt.Errorf("unable to get file %q: %w", name, err)
-			}
-			defer slogerrcapture.Do(l, rc.Close, "closing %s", name)
+				if err := func() error {
+					rc, err := bkt.Get(ctx, name)
+					if err != nil {
+						return fmt.Errorf("unable to get file %q: %w", name, err)
+					}
+					defer slogerrcapture.Do(l, rc.Close, "closing %s", name)
 
-			f, err := os.Create(dst)
-			if err != nil {
-				return fmt.Errorf("unable to create file %q: %w", dst, err)
-			}
-			if _, err := io.Copy(f, rc); err != nil {
-				return fmt.Errorf("unable to copy file %q: %w", dst, err)
+					f, err := os.Create(fileDst)
+					if err != nil {
+						return fmt.Errorf("unable to create file %q: %w", fileDst, err)
+					}
+
+					b := copyPool.Get().(*[]byte)
+					*b = (*b)[:cap(*b)]
+					defer copyPool.Put(b)
+
+					if _, err := io.CopyBuffer(f, rc, *b); err != nil {
+						return fmt.Errorf("unable to copy file %q: %w", fileDst, err)
+					}
+					return nil
+				}(); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
-		return nil
-	}, objstore.WithRecursiveIter())
-	if err != nil {
-		return fmt.Errorf("unable to iter bucket: %w", err)
 	}
+
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("unable to download directory: %w", err)
 	}
