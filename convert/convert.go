@@ -153,16 +153,12 @@ func WriteConcurrency(c int) ConvertOption {
 	}
 }
 
-func WriteStreamFile(
+func WriteStreamDescriptorFile(
 	ctx context.Context,
 	bkt objstore.Bucket,
 	extLabels schema.ExternalLabels,
 ) error {
-	var descriptor = streampb.StreamDescriptor{
-		ExternalLabels: extLabels,
-	}
-
-	data, err := proto.Marshal(&descriptor)
+	data, err := proto.Marshal(&streampb.StreamDescriptor{ExternalLabels: extLabels})
 	if err != nil {
 		return err
 	}

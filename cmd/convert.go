@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/convert"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/slogerrcapture"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
+	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
 type convertOpts struct {
@@ -200,6 +202,11 @@ func advanceConversion(
 	parquetStreams := parquetDiscoverer.Streams()
 	tsdbMetas := tsdbDiscoverer.Streams()
 
+	streamHashMap := make(map[schema.ExternalLabelsHash]schema.ExternalLabels)
+	for _, discoveredStream := range parquetStreams {
+		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
+	}
+
 	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
@@ -262,10 +269,50 @@ func advanceConversion(
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
 		}
-		if err := convert.WriteStreamFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
+
+		// Checking for hash collisions:
+		// If a discovered stream has different labels than the new stream with the same hash
+		// we panic. If it has the same labels, we can just return nil as it is already uploaded.
+		//
+		// If a new stream is being written, it won't be in the streamHashMap so we still need to
+		// 1. Check if it exists in the bucket in case another converter uploaded after we called
+		// discoverer.Streams()
+		// 2a. If stream file does not exist, just upload.
+		// 2b. If stream file exists and labels are not equal - panic, otherwise,
+		// proceed with the upload.
+		extLabelHash := step.ExternalLabels.Hash()
+		filename := schema.StreamDescriptorFileNameForBlock(extLabelHash)
+		if foundExtLabels, ok := streamHashMap[extLabelHash]; ok {
+			if !maps.Equal(step.ExternalLabels, foundExtLabels) {
+				panic("BUG/TODO: possible hash collision found while uploading stream file; we do not handle this at the moment")
+			}
+
+			streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
+			log.Info("Conversion completed", slog.String("date", step.Date.String()))
+
+			prevBlocks = stepBlocks
+			continue
+		}
+
+		exists, err := parquetBkt.Exists(ctx, filename)
+		if err != nil {
+			return fmt.Errorf("failed to check if file exists in bucket: %w", err)
+		}
+		if exists {
+			sdfile, err := locate.ReadStreamDescriptorFile(ctx, parquetBkt, extLabelHash, log)
+			if err != nil {
+				return fmt.Errorf("failed to read stream descriptor from bucket: %w", err)
+			}
+			if !maps.Equal(sdfile.ExternalLabels, step.ExternalLabels) {
+				panic("BUG/TODO: hash collision found while uploading stream file; we do not handle this at the moment")
+			}
+		}
+
+		if err := convert.WriteStreamDescriptorFile(ctx, parquetBkt, step.ExternalLabels); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to write stream file: %w", err)
 		}
+		streamHashMap[step.ExternalLabels.Hash()] = step.ExternalLabels
 		log.Info("Conversion completed", slog.String("date", step.Date.String()))
 
 		prevBlocks = stepBlocks

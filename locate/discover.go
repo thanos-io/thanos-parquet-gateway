@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
-
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thanos-io/objstore"
@@ -169,7 +168,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 			continue
 		}
 		p.Go(func(ctx context.Context) error {
-			sd, err := readStreamDescriptorFile(ctx, s.bkt, discoveredHash, s.l)
+			sd, err := ReadStreamDescriptorFile(ctx, s.bkt, discoveredHash, s.l)
 			if err != nil {
 				return fmt.Errorf("unable to read stream descriptor for hash %q: %w", discoveredHash.String(), err)
 			}
@@ -263,7 +262,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 	return nil
 }
 
-func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
+func ReadStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabelsHash schema.ExternalLabelsHash, l *slog.Logger) (schema.StreamDescriptor, error) {
 	sdfile := schema.StreamDescriptorFileNameForBlock(extLabelsHash)
 	attrs, err := bkt.Attributes(ctx, sdfile)
 	if err != nil {
@@ -295,22 +294,22 @@ func readStreamDescriptorFile(ctx context.Context, bkt objstore.Bucket, extLabel
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
 	}
 
-	metapb := &streampb.StreamDescriptor{}
-	if err := proto.Unmarshal(buf, metapb); err != nil {
+	streampb := &streampb.StreamDescriptor{}
+	if err := proto.Unmarshal(buf, streampb); err != nil {
 		return schema.StreamDescriptor{}, fmt.Errorf("unable to read %s: %w", sdfile, err)
 	}
 
-	if len(metapb.GetExternalLabels()) == 0 {
+	if len(streampb.GetExternalLabels()) == 0 {
 		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has no external labels", sdfile)
 	}
 
-	extLbls := schema.ExternalLabels(metapb.GetExternalLabels())
+	extLbls := schema.ExternalLabels(streampb.GetExternalLabels())
 	if extLbls.Hash() != extLabelsHash {
 		return schema.StreamDescriptor{}, fmt.Errorf("stream descriptor %s has invalid external labels hash: got %d, want %d", sdfile, extLbls.Hash(), extLabelsHash)
 	}
 
 	return schema.StreamDescriptor{
-		ExternalLabels: metapb.GetExternalLabels(),
+		ExternalLabels: streampb.GetExternalLabels(),
 	}, nil
 }
 
