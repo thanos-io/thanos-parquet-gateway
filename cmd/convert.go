@@ -403,40 +403,60 @@ func ulidsFromConvertible(blocks []convert.Convertible) []string {
 }
 
 func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(opts.blockDownloadConcurrency)
+	metaCh := make(chan metadata.Meta, len(metas))
 
-	mu := sync.Mutex{}
-	res := make([]convert.Convertible, 0)
 	for _, m := range metas {
+		select {
+		case metaCh <- m:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	close(metaCh)
+
+	g, ctx := errgroup.WithContext(ctx)
+	mu := sync.Mutex{}
+	res := make([]convert.Convertible, 0, len(metas))
+
+	for range opts.blockDownloadConcurrency {
 		g.Go(func() error {
-			src := m.ULID.String()
-			dst := filepath.Join(blkDir, src)
+			for m := range metaCh {
+				src := m.ULID.String()
+				dst := filepath.Join(blkDir, src)
 
-			log.Debug("block download start", "ulid", src)
+				log.Debug("block download start", "ulid", src)
 
-			if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
-				return downloadBlock(ctx, bkt, m, blkDir, opts, log)
-			}); err != nil {
-				return fmt.Errorf("unable to download block %q: %w", src, err)
+				if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
+					return downloadBlock(ctx, bkt, m, blkDir, opts, log)
+				}); err != nil {
+					return fmt.Errorf("unable to download block %q: %w", src, err)
+				}
+				blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
+				if err != nil {
+					return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
+				}
+				mu.Lock()
+				res = append(res, blk)
+				mu.Unlock()
+
+				log.Debug("block download complete", "ulid", src)
 			}
-			blk, err := tsdb.OpenBlock(log, dst, chunkenc.NewPool(), tsdb.DefaultPostingsDecoderFactory)
-			if err != nil {
-				return fmt.Errorf("unable to open block %q: %w", m.ULID, err)
-			}
-			mu.Lock()
-			res = append(res, blk)
-			mu.Unlock()
-
-			log.Debug("block download complete", "ulid", src)
 			return nil
-
 		})
 	}
+
 	if err := g.Wait(); err != nil {
 		return res, err
 	}
 	return res, nil
+}
+
+var copyPool = sync.Pool{
+	New: func() any {
+		const sz = 32 * 1024
+		buf := make([]byte, sz)
+		return &buf
+	},
 }
 
 func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts, l *slog.Logger) error {
@@ -460,47 +480,72 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 	}
 
 	// we reimplement download dir from objstore to skip the cleanup part on partial downloads
-	g, ctx := errgroup.WithContext(ctx)
-	g.SetLimit(opts.downloadConcurrency)
+	objPathCh := make(chan string)
 
-	err := bkt.Iter(ctx, src, func(name string) error {
-		g.Go(func() error {
-			dst := filepath.Join(dst, strings.TrimPrefix(name, src))
-			if strings.HasSuffix(name, objstore.DirDelim) {
-				return nil
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer close(objPathCh)
+		err := bkt.Iter(ctx, src, func(objPath string) error {
+			select {
+			case objPathCh <- objPath:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			// In case the previous upload failed we dont download the files that have the correct size.
-			// Size is not the best indicator, but its good enough. ideally we would want a hash but we
-			// dont write those currently.
-			// If the file was corrupted, then opening the block will very likely fail anyway.
-			if stat, err := os.Stat(dst); err == nil {
-				if known, ok := fmap[strings.TrimPrefix(name, src+objstore.DirDelim)]; ok {
-					if stat.Size() == known.SizeBytes && stat.Size() != 0 {
-						return nil
+			return nil
+		}, objstore.WithRecursiveIter())
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	})
+
+	for range opts.downloadConcurrency {
+		g.Go(func() error {
+			for name := range objPathCh {
+				fileDst := filepath.Join(dst, strings.TrimPrefix(name, src))
+				if strings.HasSuffix(name, objstore.DirDelim) {
+					continue
+				}
+				// In case the previous upload failed we dont download the files that have the correct size.
+				// Size is not the best indicator, but its good enough. ideally we would want a hash but we
+				// dont write those currently.
+				// If the file was corrupted, then opening the block will very likely fail anyway.
+				if stat, err := os.Stat(fileDst); err == nil {
+					if known, ok := fmap[strings.TrimPrefix(name, src+objstore.DirDelim)]; ok {
+						if stat.Size() == known.SizeBytes && stat.Size() != 0 {
+							continue
+						}
 					}
 				}
-			}
 
-			rc, err := bkt.Get(ctx, name)
-			if err != nil {
-				return fmt.Errorf("unable to get file %q: %w", name, err)
-			}
-			defer slogerrcapture.Do(l, rc.Close, "closing %s", name)
+				if err := func() error {
+					rc, err := bkt.Get(ctx, name)
+					if err != nil {
+						return fmt.Errorf("unable to get file %q: %w", name, err)
+					}
+					defer slogerrcapture.Do(l, rc.Close, "closing %s", name)
 
-			f, err := os.Create(dst)
-			if err != nil {
-				return fmt.Errorf("unable to create file %q: %w", dst, err)
-			}
-			if _, err := io.Copy(f, rc); err != nil {
-				return fmt.Errorf("unable to copy file %q: %w", dst, err)
+					f, err := os.Create(fileDst)
+					if err != nil {
+						return fmt.Errorf("unable to create file %q: %w", fileDst, err)
+					}
+
+					b := copyPool.Get().(*[]byte)
+					*b = (*b)[:cap(*b)]
+					defer copyPool.Put(b)
+
+					if _, err := io.CopyBuffer(f, rc, *b); err != nil {
+						return fmt.Errorf("unable to copy file %q: %w", fileDst, err)
+					}
+					return nil
+				}(); err != nil {
+					return err
+				}
 			}
 			return nil
 		})
-		return nil
-	}, objstore.WithRecursiveIter())
-	if err != nil {
-		return fmt.Errorf("unable to iter bucket: %w", err)
 	}
+
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("unable to download directory: %w", err)
 	}
