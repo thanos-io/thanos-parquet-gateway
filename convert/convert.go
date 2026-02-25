@@ -389,11 +389,7 @@ func shardedIndexRowReader(
 
 			concurrency: opts.encodingConcurrency,
 
-			chunksColumn0:    columnIDForKnownColumn(s, schema.ChunksColumn0),
-			chunksColumn1:    columnIDForKnownColumn(s, schema.ChunksColumn1),
-			chunksColumn2:    columnIDForKnownColumn(s, schema.ChunksColumn2),
-			labelIndexColumn: columnIDForKnownColumn(s, schema.LabelIndexColumn),
-			labelHashColumn:  columnIDForKnownColumn(s, schema.LabelHashColumn),
+			columnCache: make(map[string]int),
 		}
 	}
 	return shardIndexRowReader, nil
@@ -554,7 +550,6 @@ func newConverter(
 	chunkBufferPool parquet.BufferPool,
 	labelPageBufferSize int,
 	chunkPageBufferSize int,
-
 ) *converter {
 	return &converter{
 		date:          date,
@@ -679,7 +674,6 @@ func newSplitFileWriter(ctx context.Context, bkt objstore.Bucket, inSchema *parq
 		fileWriters: fileWriters,
 		g:           g,
 	}, nil
-
 }
 
 func (s *splitPipeFileWriter) WriteRows(rows []parquet.Row) (int, error) {
