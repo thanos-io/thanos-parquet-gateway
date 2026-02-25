@@ -6,10 +6,12 @@ package convert
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"math/rand"
 	"slices"
 	"strconv"
@@ -17,8 +19,13 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/leanovate/gopter"
+	"github.com/leanovate/gopter/gen"
+	"github.com/leanovate/gopter/prop"
+	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
@@ -58,6 +65,68 @@ func BenchmarkConverter(b *testing.B) {
 
 		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{&HeadBlock{Head: h}}))
 	}
+}
+
+func createReaderWithSeries(t *testing.T, seriesLabels []string, seriesCount int, blockIdx int) (blockIndexReader, func() error) {
+	t.Helper()
+
+	st := teststorage.New(t)
+	app := st.Appender(t.Context())
+	for range seriesCount {
+		_, err := app.Append(0, labels.FromStrings(seriesLabels...), 0, rand.Float64())
+		require.NoError(t, err)
+	}
+	require.NoError(t, app.Commit())
+	h := st.Head()
+
+	ir, err := h.Index()
+	require.NoError(t, err)
+
+	apn, apv := index.AllPostingsKey()
+	p, err := ir.Postings(context.Background(), apn, apv)
+	require.NoError(t, err)
+
+	return blockIndexReader{reader: ir, postings: p, blockID: ulid.MustNewDefault(time.Now()), idx: blockIdx}, st.Close
+}
+
+func TestSortedSeriesIterator(t *testing.T) {
+	properties := gopter.NewProperties(nil)
+
+	properties.Property("sortedSeriesIterator returns series sorted by __name__", prop.ForAll(
+		func(blockCount int) bool {
+			readers := make([]blockIndexReader, 0, blockCount*10)
+			closers := make([]func() error, 0, blockCount*10)
+			for bid := range blockCount {
+				for i := range 10 {
+					reader, closeFunc := createReaderWithSeries(t, []string{"__name__", fmt.Sprintf("foobar%d", blockCount-bid), "aa", fmt.Sprintf("%d", i)}, 10, bid)
+					readers = append(readers, reader)
+					closers = append(closers, closeFunc)
+				}
+			}
+			cOpts := convertOpts{
+				sortLabels: []string{"__name__"},
+			}
+			it := sortedSeriesIterator(readers, 0, math.MaxInt64, cOpts)
+			var slbls []labels.Labels
+			for it.Next() {
+				v := it.At()
+				slbls = append(slbls, v.labels.Copy())
+			}
+			require.Len(t, slbls, blockCount*10)
+
+			sortFn := sortedSeriesFunc(cOpts)
+			for i := 1; i < len(slbls); i++ {
+				require.True(t, sortFn(blockSeries{labels: slbls[i-1]}, blockSeries{labels: slbls[i]}))
+			}
+
+			for _, c := range closers {
+				require.NoError(t, c())
+			}
+
+			return true
+		}, gen.IntRange(1, 10)))
+
+	properties.TestingRun(t)
 }
 
 func TestConverter(t *testing.T) {
