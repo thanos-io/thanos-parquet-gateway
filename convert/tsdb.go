@@ -13,6 +13,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -77,11 +78,17 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 
 	chunkSeriesC := make(chan chunkSeriesPromise, rr.concurrency)
 
+	iterPool := make(chan chunks.Iterator, rr.concurrency)
+	for range rr.concurrency {
+		iterPool <- nil
+	}
+
 	go func() {
 		defer close(chunkSeriesC)
+
 		for j := 0; j < len(buf) && rr.seriesSet.Next(); j++ {
 			s := rr.seriesSet.At()
-			it := s.Iterator(nil)
+			it := s.Iterator(<-iterPool)
 
 			promise := chunkSeriesPromise{
 				s: s,
@@ -91,7 +98,8 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 			chunkSeriesC <- promise
 
 			go func() {
-				chkBytes, err := collectChunks(it)
+				chkBytes, it, err := collectChunks(it)
+				iterPool <- it
 				promise.c <- chkBytesOrError{chkBytes: chkBytes, err: err}
 				close(promise.c)
 			}()
