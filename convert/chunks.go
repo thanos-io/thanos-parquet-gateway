@@ -16,17 +16,15 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
-func collectChunks(it chunks.Iterator) ([schema.ChunkColumnsPerDay][]byte, error) {
-	var (
-		res [schema.ChunkColumnsPerDay][]byte
-	)
+func collectChunks(it chunks.Iterator) ([schema.ChunkColumnsPerDay][]byte, chunks.Iterator, error) {
+	var res [schema.ChunkColumnsPerDay][]byte
 	// NOTE: 'it' should hold chunks for one day. Chunks are usually length 2h so we should get 12 of them.
 	chunks := make([]chunks.Meta, 0, 12)
 	for it.Next() {
 		chunks = append(chunks, it.At())
 	}
 	if err := it.Err(); err != nil {
-		return res, fmt.Errorf("unable to iterate chunks: %w", err)
+		return res, it, fmt.Errorf("unable to iterate chunks: %w", err)
 	}
 	// NOTE: we need to sort chunks here as they come from different blocks that we merged.
 	// Prometheus does not guarantee that they are sorted. We have to sort them either here or
@@ -49,5 +47,5 @@ func collectChunks(it chunks.Iterator) ([schema.ChunkColumnsPerDay][]byte, error
 		chkBytes = append(chkBytes, bs...)
 		res[chkIdx] = chkBytes
 	}
-	return res, nil
+	return res, it, nil
 }
