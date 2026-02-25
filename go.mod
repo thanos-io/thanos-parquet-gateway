@@ -55,6 +55,7 @@ require (
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/providers/confmap v1.0.0 // indirect
 	github.com/knadh/koanf/v2 v2.2.1 // indirect
+	github.com/leanovate/gopter v0.2.11 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/minio/crc64nvme v1.0.1 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
