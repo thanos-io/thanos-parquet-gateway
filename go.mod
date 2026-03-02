@@ -5,6 +5,7 @@ go 1.24.2
 require (
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6
 	github.com/KimMachineGun/automemlimit v0.7.3
+	github.com/cortexproject/promqlsmith v0.0.0-20250407233056-90db95b1a4e4
 	github.com/google/go-cmp v0.7.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.0.1
 	github.com/json-iterator/go v1.1.12
@@ -15,6 +16,7 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.66.1
 	github.com/prometheus/prometheus v0.306.0-rc.0
+	github.com/sourcegraph/conc v0.3.0
 	github.com/thanos-io/objstore v0.0.0-20250804093838-71d60dfee488
 	github.com/thanos-io/promql-engine v0.0.0-20250824180825-bb56ceb89cf6
 	github.com/thanos-io/thanos v0.39.3-0.20250821133311-801bda7a90c4
@@ -26,7 +28,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.36.0
 	google.golang.org/protobuf v1.36.9
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -72,7 +73,6 @@ require (
 	github.com/prometheus/otlptranslator v0.0.0-20250620074007-94f535e0c588 // indirect
 	github.com/prometheus/sigv4 v0.2.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
 	github.com/tinylib/msgp v1.3.0 // indirect
 	github.com/tjhop/slog-gokit v0.1.4 // indirect
@@ -104,6 +104,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go4.org/intern v0.0.0-20230525184215-6c62f75575cb // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
@@ -144,7 +145,7 @@ require (
 	github.com/baidubce/bce-sdk-go v0.9.230 // indirect
 	github.com/bboreham/go-loser v0.0.0-20230920113527-fcc2c21820a3 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/clbanning/mxj v1.8.4 // indirect
 	github.com/cncf/xds/go v0.0.0-20250501225837-2ac532fd4443 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -194,7 +195,7 @@ require (
 	github.com/prometheus/procfs v0.17.0 // indirect
 	github.com/rs/xid v1.6.0 // indirect
 	github.com/sony/gobreaker v1.0.0 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/stretchr/testify v1.11.1
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.66 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.35.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.61.0

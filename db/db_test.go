@@ -9,18 +9,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"slices"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/cortexproject/promqlsmith"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/promql/promqltest"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/prometheus/prometheus/util/testutil"
 	"github.com/stretchr/testify/require"
@@ -100,7 +104,7 @@ func (st *acceptanceTestStorage) Querier(from, to int64) (storage.Querier, error
 		// parquet-go panics when writing an empty parquet file
 		return st.st.Querier(from, to)
 	}
-	return storageToDB(st.tb, st.st, schema.ExternalLabels{}).Queryable().Querier(from, to)
+	return storageToDB(st.tb, st.st.Head(), schema.ExternalLabels{}).Queryable().Querier(from, to)
 }
 
 func (st *acceptanceTestStorage) Close() error {
@@ -120,7 +124,7 @@ func TestSelect(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -186,7 +190,7 @@ func TestLabelNames(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -232,7 +236,7 @@ func TestLabelValues(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -1066,7 +1070,7 @@ func TestInstantQuery(t *testing.T) {
 			testStorage := promqltest.LoadedStorage(t, tc.load)
 			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			database := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
+			database := storageToDB(t, testStorage.Head(), schema.ExternalLabels{"testdb": "db1"})
 			ctx := context.Background()
 
 			for _, query := range tc.queries {
@@ -1096,6 +1100,86 @@ func TestInstantQuery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzConverter(f *testing.F) {
+	f.Add(10, 10)
+
+	f.Fuzz(func(t *testing.T, uniqueMetricCount, randSeed int) {
+		seriesSet := []labels.Labels{}
+
+		uniqueMetricCount = min(uniqueMetricCount, 1)
+		uniqueMetricCount = max(uniqueMetricCount, 10)
+
+		n := 1772449900693
+
+		st := teststorage.New(t)
+		t.Cleanup(func() { require.NoError(t, st.Close()) })
+		app := st.Appender(t.Context())
+		for i := range 3 {
+			for m := range uniqueMetricCount {
+				for _, sc := range []string{"200", "400", "500"} {
+					ls := labels.FromStrings("__name__", fmt.Sprintf("foo%d", m), "idx", fmt.Sprintf("%d", i), "status_code", sc)
+					_, err := app.Append(0, ls, 1772449900693, rand.Float64())
+					seriesSet = append(seriesSet, ls)
+					require.NoError(t, err)
+				}
+			}
+		}
+		require.NoError(t, app.Commit())
+
+		h := st.Head()
+
+		extLbls := schema.ExternalLabels{}
+		database := storageToDB(t, h, extLbls)
+
+		engine := promql.NewEngine(opts)
+
+		rnd := rand.New(rand.NewSource(int64(randSeed)))
+		opts := []promqlsmith.Option{
+			promqlsmith.WithEnabledFunctions([]*parser.Function{
+				parser.Functions["absent"],
+			}),
+			promqlsmith.WithEnabledExprs(
+				[]promqlsmith.ExprType{
+					promqlsmith.VectorSelector,
+					promqlsmith.MatrixSelector,
+					promqlsmith.BinaryExpr,
+					promqlsmith.AggregateExpr,
+					promqlsmith.SubQueryExpr,
+					promqlsmith.CallExpr,
+					promqlsmith.NumberLiteral,
+					promqlsmith.UnaryExpr,
+				},
+			),
+			promqlsmith.WithEnabledAggrs([]parser.ItemType{parser.SUM, parser.AVG, parser.MIN, parser.MAX}),
+		}
+		sm := promqlsmith.New(rnd, seriesSet, opts...)
+
+		for range 50 {
+			qi := sm.WalkInstantQuery()
+
+			opts := promql.NewPrometheusQueryOpts(false, 5*time.Second)
+
+			qt := time.UnixMilli(int64(n))
+
+			qp, err := engine.NewInstantQuery(t.Context(), database.Queryable(), opts, qi.String(), qt)
+			require.NoError(t, err)
+
+			t.Logf("query: %s", qi.String())
+
+			qpr := qp.Exec(t.Context())
+
+			qo, err := engine.NewInstantQuery(t.Context(), st.DB, opts, qi.String(), qt)
+			require.NoError(t, err)
+
+			qor := qo.Exec(t.Context())
+
+			if !cmp.Equal(qor, qpr, comparer) {
+				t.Fatalf("not equal:\nOLD:\n%+v\nNEW:\n%+v", qor, qpr)
+			}
+		}
+	})
 }
 
 func TestRangeQuery(t *testing.T) {
@@ -1272,7 +1356,7 @@ func TestRangeQuery(t *testing.T) {
 			testStorage := promqltest.LoadedStorage(t, tc.load)
 			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			db := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
+			db := storageToDB(t, testStorage.Head(), schema.ExternalLabels{"testdb": "db1"})
 			ctx := t.Context()
 
 			for _, query := range tc.queries {
@@ -1326,7 +1410,7 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 	if err := app.Commit(); err != nil {
 		t.Fatalf("unable to commit: %s", err)
 	}
-	database := storageToDB(t, st, schema.ExternalLabels{"aa": "bb"})
+	database := storageToDB(t, st.Head(), schema.ExternalLabels{"aa": "bb"})
 
 	expr := `foo{bar=~"0"}`
 
@@ -1352,10 +1436,9 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 	}
 }
 
-func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore.Bucket, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
+func storageToDBWithBkt(tb testing.TB, h *tsdb.Head, bkt objstore.Bucket, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	ctx := context.Background()
 
-	h := st.Head()
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
@@ -1371,12 +1454,12 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	return db.NewDB(syncer, opts...)
 }
 
-func storageToDB(tb testing.TB, st *teststorage.TestStorage, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
+func storageToDB(tb testing.TB, h *tsdb.Head, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	bkt, err := filesystem.NewBucket(tb.TempDir())
 	if err != nil {
 		tb.Fatalf("unable to create bucket: %s", err)
 	}
-	return storageToDBWithBkt(tb, st, bkt, extLabels, opts...)
+	return storageToDBWithBkt(tb, h, bkt, extLabels, opts...)
 
 }
 
