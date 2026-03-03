@@ -248,6 +248,7 @@ type tsdbDiscoveryOpts struct {
 	discoveryMinBlockAge time.Duration
 
 	externalLabelMatchers matcherSlice
+	replicaLabels         []string
 }
 
 func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, opts tsdbDiscoveryOpts) (*locate.TSDBDiscoverer, error) {
@@ -256,6 +257,7 @@ func setupTSDBDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt
 		locate.TSDBMetaConcurrency(opts.discoveryConcurrency),
 		locate.TSDBMinBlockAge(opts.discoveryMinBlockAge),
 		locate.TSDBMatchExternalLabels(opts.externalLabelMatchers...),
+		locate.TSDBReplicaLabels(opts.replicaLabels...),
 		locate.WithLogger(log),
 	)
 

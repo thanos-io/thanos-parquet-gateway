@@ -299,6 +299,97 @@ func TestTSDBDiscoverer(t *testing.T) {
 		}
 
 	})
+	t.Run("Discoverer merges blocks that differ only by replica label", func(tt *testing.T) {
+		ctx := tt.Context()
+		bkt, err := filesystem.NewBucket(tt.TempDir())
+		require.NoError(tt, err)
+
+		for _, m := range []metadata.Meta{
+			{
+				BlockMeta: tsdb.BlockMeta{
+					ULID:  ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
+				},
+				Thanos: metadata.Thanos{
+					Labels: map[string]string{
+						"cluster":               "eu",
+						"receive_node_hostname": "node-a",
+					},
+				},
+			},
+			{
+				BlockMeta: tsdb.BlockMeta{
+					ULID:  ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
+				},
+				Thanos: metadata.Thanos{
+					Labels: map[string]string{
+						"cluster":               "eu",
+						"receive_node_hostname": "node-b",
+					},
+				},
+			},
+		} {
+			buf := bytes.NewBuffer(nil)
+			require.NoError(tt, json.NewEncoder(buf).Encode(m))
+			require.NoError(tt, bkt.Upload(ctx, filepath.Join(m.ULID.String(), metadata.MetaFilename), buf))
+		}
+
+		discoverer := NewTSDBDiscoverer(bkt, TSDBReplicaLabels("receive_node_hostname"))
+		require.NoError(tt, discoverer.Discover(ctx))
+
+		streams := discoverer.Streams()
+		require.Len(tt, streams, 1, "blocks that differ only by replica label should merge into one stream")
+
+		streamLbls := schema.ExternalLabels{"cluster": "eu"}
+		eh := streamLbls.Hash()
+		stream, ok := streams[eh]
+		require.True(tt, ok)
+		require.True(tt, maps.Equal(streamLbls, stream.ExternalLabels), "stream external labels should not contain replica label")
+		require.Len(tt, stream.Metas, 2, "stream should contain both blocks")
+	})
+	t.Run("Discoverer without replica labels keeps blocks in separate streams", func(tt *testing.T) {
+		ctx := tt.Context()
+		bkt, err := filesystem.NewBucket(tt.TempDir())
+		require.NoError(tt, err)
+
+		for _, m := range []metadata.Meta{
+			{
+				BlockMeta: tsdb.BlockMeta{
+					ULID:  ulid.MustParse("01JS0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
+				},
+				Thanos: metadata.Thanos{
+					Labels: map[string]string{
+						"cluster":               "eu",
+						"receive_node_hostname": "node-a",
+					},
+				},
+			},
+			{
+				BlockMeta: tsdb.BlockMeta{
+					ULID:  ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXK"),
+					Stats: tsdb.BlockStats{NumChunks: 1},
+				},
+				Thanos: metadata.Thanos{
+					Labels: map[string]string{
+						"cluster":               "eu",
+						"receive_node_hostname": "node-b",
+					},
+				},
+			},
+		} {
+			buf := bytes.NewBuffer(nil)
+			require.NoError(tt, json.NewEncoder(buf).Encode(m))
+			require.NoError(tt, bkt.Upload(ctx, filepath.Join(m.ULID.String(), metadata.MetaFilename), buf))
+		}
+
+		discoverer := NewTSDBDiscoverer(bkt)
+		require.NoError(tt, discoverer.Discover(ctx))
+
+		streams := discoverer.Streams()
+		require.Len(tt, streams, 2, "without replica labels, blocks with different replica label values are separate streams")
+	})
 }
 
 func createBlockForDate(ctx context.Context, t *testing.T, bkt objstore.Bucket, d util.Date, extLabels schema.ExternalLabels) {

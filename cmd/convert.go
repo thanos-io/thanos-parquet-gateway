@@ -111,6 +111,7 @@ func (opts *tsdbDiscoveryOpts) registerConvertTSDBFlags(cmd *kingpin.CmdClause) 
 	cmd.Flag("tsdb.discovery.concurrency", "concurrency for loading metadata").Default("1").IntVar(&opts.discoveryConcurrency)
 	cmd.Flag("tsdb.discovery.min-block-age", "blocks that have metrics that are youner then this won't be loaded").Default("0s").DurationVar(&opts.discoveryMinBlockAge)
 	MatchersVar(cmd.Flag("tsdb.discovery.select-external-labels", "only external labels matching this selector will be discovered").PlaceHolder("SELECTOR"), &opts.externalLabelMatchers)
+	cmd.Flag("tsdb.discovery.replica-labels", "label names to exclude from stream hash (e.g. receive_node_hostname). Use so compacted and uncompacted blocks write to the same path.").StringsVar(&opts.replicaLabels)
 }
 
 func (opts *apiOpts) registerConvertFlags(cmd *kingpin.CmdClause) {
@@ -194,7 +195,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 						return fmt.Errorf("unable to clean up buffer directory: %w", err)
 					}
 
-					return advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, &planner, opts.conversion.downloadConcurrency, convOpts, blkDir)
+					return advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, &planner, opts.conversion.downloadConcurrency, convOpts, blkDir, opts.tsdbDiscover.replicaLabels)
 				}); err != nil {
 					log.Warn("Error during conversion", slog.Any("err", err))
 					return nil
@@ -220,6 +221,7 @@ func advanceConversion(
 	downloadConcurrency int,
 	convOpts []convert.ConvertOption,
 	blkDir string,
+	replicaLabels []string,
 ) error {
 	log.Info("Cleaning up previous state", "block_directory", blkDir)
 	if err := cleanupDirectory(blkDir); err != nil {
@@ -251,6 +253,8 @@ func advanceConversion(
 	)
 	// Process each step (day) one by one, keeping blocks shared between steps on disk.
 	for _, step := range plan.Steps {
+		// Normalize external labels so path hash is stable (e.g. drop replica labels).
+		step.ExternalLabels = step.ExternalLabels.Without(replicaLabels)
 		// Close blocks that were open in the previous step but are no longer needed.
 		prevBlocks = closeUnused(log, step.Sources, prevBlocks)
 
