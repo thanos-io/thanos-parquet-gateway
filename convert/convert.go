@@ -688,8 +688,8 @@ func newSplitFileWriter(ctx context.Context, bkt objstore.Bucket, inSchema *parq
 		}
 
 		r, w := io.Pipe()
-		bw := bufio.NewWriterSize(w, 32_000_000)
-		br := bufio.NewReaderSize(r, 32_000_000)
+		bw := bufio.NewWriterSize(w, 1024)
+		br := bufio.NewReaderSize(r, 1024)
 		fileWriters[file] = &fileWriter{
 			pw:   parquet.NewGenericWriter[any](bw, append(cfg.opts, cfg.s)...),
 			w:    w,
