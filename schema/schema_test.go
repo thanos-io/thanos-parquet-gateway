@@ -10,7 +10,6 @@ import (
 )
 
 func TestDataColumnIndex(t *testing.T) {
-	m := Meta{Mint: 0}
 	for _, tt := range []struct {
 		d      time.Duration
 		expect int
@@ -19,10 +18,10 @@ func TestDataColumnIndex(t *testing.T) {
 		{d: 8 * time.Hour, expect: 1},
 		{d: 11 * time.Hour, expect: 1},
 		{d: 18 * time.Hour, expect: 2},
-		{d: 24 * time.Hour, expect: 2},
+		{d: 24 * time.Hour, expect: 0},
 	} {
 		t.Run("", func(ttt *testing.T) {
-			if got, _ := ChunkColumnIndex(m, time.UnixMilli(m.Mint).Add(tt.d)); got != tt.expect {
+			if got := ChunkColumnIndex(time.UnixMilli(0).Add(tt.d)); got != tt.expect {
 				ttt.Fatalf("unexpected chunk column index %d, expected %d", got, tt.expect)
 			}
 		})

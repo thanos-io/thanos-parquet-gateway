@@ -7,13 +7,11 @@ package search
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"maps"
 	"math"
-
 	"slices"
 	"sync"
 	"time"
@@ -316,14 +314,8 @@ func materializeChunks(
 ) ([][]chunks.Meta, error) {
 	rowCount := totalRows(rr)
 
-	minChunkCol, ok := schema.ChunkColumnIndex(m.Meta, time.UnixMilli(mint))
-	if !ok {
-		return nil, errors.New("unable to find min chunk column")
-	}
-	maxChunkCol, ok := schema.ChunkColumnIndex(m.Meta, time.UnixMilli(maxt))
-	if !ok {
-		return nil, errors.New("unable to find max chunk column")
-	}
+	minChunkCol := schema.ChunkColumnIndex(time.UnixMilli(mint))
+	maxChunkCol := schema.ChunkColumnIndex(time.UnixMilli(maxt))
 	rg := m.ChunkPfile.RowGroups()[rgi]
 
 	numCols := maxChunkCol - minChunkCol + 1
@@ -489,7 +481,6 @@ func materializeLabelNamesV0(ctx context.Context, meta LabelNamesReadMeta, rgi i
 		res = append(res, schema.ColumnToLabelName(cols[k][0]))
 	}
 	return res, annos, nil
-
 }
 
 func materializeLabelNamesV1(ctx context.Context, meta LabelNamesReadMeta, rgi int, rr []rowRange) ([]string, annotations.Annotations, error) {

@@ -69,14 +69,8 @@ func ColumnToLabelName(col string) string {
 	return strings.TrimPrefix(col, LabelColumnPrefix)
 }
 
-func ChunkColumnIndex(m Meta, t time.Time) (int, bool) {
-	mints := time.UnixMilli(m.Mint)
-
-	colIdx := 0
-	for cur := mints.Add(ChunkColumnLength); !t.Before(cur); cur = cur.Add(ChunkColumnLength) {
-		colIdx++
-	}
-	return min(colIdx, ChunkColumnsPerDay-1), true
+func ChunkColumnIndex(t time.Time) int {
+	return (t.UTC().Hour() / int(ChunkColumnLength.Hours())) % ChunkColumnsPerDay
 }
 
 func BuildSchemaFromLabels(lbls []string) *parquet.Schema {

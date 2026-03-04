@@ -175,6 +175,18 @@ func WriteStreamDescriptorFile(
 	return bkt.Upload(ctx, schema.StreamDescriptorFileNameForBlock(extLabels.Hash()), bytes.NewReader(data))
 }
 
+func minMaxTimestamp(blks []Convertible) (int64, int64) {
+	mn := int64(math.MaxInt64)
+	mx := int64(math.MinInt64)
+
+	for _, blk := range blks {
+		meta := blk.Meta()
+		mn = min(meta.MinTime, mn)
+		mx = max(meta.MaxTime, mx)
+	}
+	return mn, mx
+}
+
 func ConvertTSDBBlock(
 	ctx context.Context,
 	bkt objstore.Bucket,
@@ -241,7 +253,8 @@ func ConvertTSDBBlock(
 		return fmt.Errorf("failed to convert shards in parallel: %w", err)
 	}
 
-	if err := writeMetaFile(ctx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt, blks); err != nil {
+	mn, mx := minMaxTimestamp(blks)
+	if err := writeMetaFile(ctx, mn, mx, day, extLabelsHash, int64(len(shardedRowReaders)), bkt, blks); err != nil {
 		return fmt.Errorf("failed to write meta file: %w", err)
 	}
 
@@ -265,6 +278,7 @@ type blockSeries struct {
 
 func writeMetaFile(
 	ctx context.Context,
+	mint, maxt int64,
 	day util.Date,
 	extLabelsHash schema.ExternalLabelsHash,
 	numShards int64,
@@ -277,8 +291,8 @@ func writeMetaFile(
 	}
 	meta := &metapb.Metadata{
 		Version:            schema.V2,
-		Mint:               day.MinT(),
-		Maxt:               day.MaxT(),
+		Mint:               mint,
+		Maxt:               maxt,
 		Shards:             numShards,
 		ConvertedFromBLIDs: convertedFromIDs,
 	}
