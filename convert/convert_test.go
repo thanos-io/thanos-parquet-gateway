@@ -25,6 +25,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/stretchr/testify/require"
@@ -56,14 +57,20 @@ func BenchmarkConverter(b *testing.B) {
 	}
 	require.NoError(b, app.Commit())
 
+	h := st.Head()
+	require.NoError(b, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(b, blocks, 1)
+	blk := blocks[0]
+
+	ts := time.UnixMilli(blk.Meta().MinTime).UTC()
+	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		h := st.Head()
-		ts := time.UnixMilli(h.MinTime()).UTC()
-		day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
-
-		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{&HeadBlock{Head: h}}))
+		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{blk}))
 	}
 }
 
