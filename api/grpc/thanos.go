@@ -407,6 +407,8 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 }
 
 func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
+	span := tracing.SpanFromContext(srv.Context())
+
 	qryable := qs.queryable(request.WithoutReplicaLabels...)
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
@@ -435,20 +437,20 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	css := cq.Select(srv.Context(), true, hints, ms...)
 
 	var (
-		i  = int64(0)
-		it chunks.Iterator
+		seriesCount = int64(0)
+		sampleCount = int64(0)
+		it          chunks.Iterator
 	)
 	for css.Next() {
-		i++
-
 		series := css.At()
 
-		if request.Limit > 0 && i > request.Limit {
+		if request.Limit > 0 && seriesCount >= request.Limit {
 			if err := srv.Send(storepb.NewWarnSeriesResponse(warnings.ErrorTruncatedResponse)); err != nil {
 				return status.Error(codes.Aborted, err.Error())
 			}
 			break
 		}
+		seriesCount++
 
 		storeSeries := storepb.Series{Labels: zLabelsFromMetric(series.Labels())}
 
@@ -466,6 +468,7 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 					Data: chk.Chunk.Bytes(),
 				},
 			})
+			sampleCount += int64(chk.Chunk.NumSamples())
 		}
 		if err := it.Err(); err != nil {
 			return status.Error(codes.Internal, err.Error())
@@ -487,6 +490,11 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 			return status.Error(codes.Aborted, err.Error())
 		}
 	}
+
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 
 	return nil
 }
