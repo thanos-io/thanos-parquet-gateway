@@ -33,6 +33,7 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -415,6 +416,8 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
+
+	span.SetAttributes(attribute.StringSlice("series.matchers", matchers.ToStringSlice(ms)))
 
 	hints := &storage.SelectHints{
 		Start: request.MinTime,
