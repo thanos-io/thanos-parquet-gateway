@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -189,10 +190,7 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 	}
 
 	for stream := range s.blocks {
-		if _, ok := blocks[stream]; !ok {
-			continue
-		}
-		s.blocks[stream] = blocks[stream]
+		maps.Copy(s.blocks[stream], blocks[stream])
 	}
 	for _, v := range s.blocks {
 		numBlocks += len(v)
