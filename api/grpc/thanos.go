@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/stats"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +33,7 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -239,6 +241,11 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
 
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
+
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
 	}
@@ -303,6 +310,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
+
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
 
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
