@@ -680,6 +680,10 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	span.SetAttributes(
+		attribute.Int("result.series", len(series)),
+	)
+
 	writeSeriesResponse(w, series, annos, qapi.l)
 }
 
