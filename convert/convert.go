@@ -494,7 +494,7 @@ func shardSeries(
 	shardIdx := 0
 	uniqueSeriesCount := 0
 	shardUniqueCount := 0
-	var curHash uint64 = 0
+	var curHash uint64
 	maxSeriesPerShard := opts.numRowGroups * opts.rowGroupSize
 
 	for it.Next() {
