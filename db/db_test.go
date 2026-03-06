@@ -18,7 +18,6 @@ import (
 	"github.com/cortexproject/promqlsmith"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/oklog/ulid/v2"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
@@ -105,7 +104,7 @@ func (st *acceptanceTestStorage) Querier(from, to int64) (storage.Querier, error
 		// parquet-go panics when writing an empty parquet file
 		return st.st.Querier(from, to)
 	}
-	return storageToDB(st.tb, st.st.Head(), schema.ExternalLabels{}).Queryable().Querier(from, to)
+	return storageToDB(st.tb, st.st, schema.ExternalLabels{}).Queryable().Querier(from, to)
 }
 
 func (st *acceptanceTestStorage) Close() error {
@@ -125,7 +124,7 @@ func TestSelect(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -191,7 +190,7 @@ func TestLabelNames(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -237,7 +236,7 @@ func TestLabelValues(t *testing.T) {
     `)
 	t.Cleanup(func() { require.NoError(t, ts.Close()) })
 
-	database := storageToDB(t, ts.Head(), schema.ExternalLabels{"ext": "test", "rep": "1"})
+	database := storageToDB(t, ts, schema.ExternalLabels{"ext": "test", "rep": "1"})
 	qry, err := database.Queryable(db.DropReplicaLabels("rep")).Querier(math.MinInt64, math.MaxInt64)
 	if err != nil {
 		t.Fatalf("unable to construct querier: %s", err)
@@ -1071,7 +1070,7 @@ func TestInstantQuery(t *testing.T) {
 			testStorage := promqltest.LoadedStorage(t, tc.load)
 			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			database := storageToDB(t, testStorage.Head(), schema.ExternalLabels{"testdb": "db1"})
+			database := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
 			ctx := context.Background()
 
 			for _, query := range tc.queries {
@@ -1129,10 +1128,8 @@ func FuzzConverter(f *testing.F) {
 		}
 		require.NoError(t, app.Commit())
 
-		h := st.Head()
-
 		extLbls := schema.ExternalLabels{}
-		database := storageToDB(t, h, extLbls)
+		database := storageToDB(t, st, extLbls)
 
 		engine := promql.NewEngine(opts)
 
@@ -1357,7 +1354,7 @@ func TestRangeQuery(t *testing.T) {
 			testStorage := promqltest.LoadedStorage(t, tc.load)
 			t.Cleanup(func() { require.NoError(t, testStorage.Close()) })
 
-			db := storageToDB(t, testStorage.Head(), schema.ExternalLabels{"testdb": "db1"})
+			db := storageToDB(t, testStorage, schema.ExternalLabels{"testdb": "db1"})
 			ctx := t.Context()
 
 			for _, query := range tc.queries {
@@ -1411,7 +1408,7 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 	if err := app.Commit(); err != nil {
 		t.Fatalf("unable to commit: %s", err)
 	}
-	database := storageToDB(t, st.Head(), schema.ExternalLabels{"aa": "bb"})
+	database := storageToDB(t, st, schema.ExternalLabels{"aa": "bb"})
 
 	expr := `foo{bar=~"0"}`
 
@@ -1437,13 +1434,21 @@ func TestExternalAndReplicaLabels(t *testing.T) {
 	}
 }
 
-func storageToDBWithBkt(tb testing.TB, h *tsdb.Head, bkt objstore.Bucket, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
+func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore.Bucket, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	ctx := context.Background()
+
+	h := st.Head()
 
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h, OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}))
+	require.NoError(tb, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(tb, blocks, 1)
+	blk := blocks[0]
+
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{blk}))
 	require.NoError(tb, convert.WriteStreamDescriptorFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)
@@ -1455,12 +1460,12 @@ func storageToDBWithBkt(tb testing.TB, h *tsdb.Head, bkt objstore.Bucket, extLab
 	return db.NewDB(syncer, opts...)
 }
 
-func storageToDB(tb testing.TB, h *tsdb.Head, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
+func storageToDB(tb testing.TB, st *teststorage.TestStorage, extLabels schema.ExternalLabels, opts ...db.DBOption) *db.DB {
 	bkt, err := filesystem.NewBucket(tb.TempDir())
 	if err != nil {
 		tb.Fatalf("unable to create bucket: %s", err)
 	}
-	return storageToDBWithBkt(tb, h, bkt, extLabels, opts...)
+	return storageToDBWithBkt(tb, st, bkt, extLabels, opts...)
 
 }
 

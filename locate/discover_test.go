@@ -310,7 +310,14 @@ func createBlockForDate(ctx context.Context, t *testing.T, bkt objstore.Bucket, 
 	require.NoError(t, err)
 	require.NoError(t, app.Commit())
 
-	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: st.Head(), OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}))
+	h := st.Head()
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	require.NoError(t, convert.ConvertTSDBBlock(ctx, bkt, d, extLabels.Hash(), []convert.Convertible{blk}))
 
 	streamDescriptor := &streampb.StreamDescriptor{
 		ExternalLabels: extLabels,
