@@ -86,6 +86,7 @@ func (opts *discoveryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 func (opts *syncerOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("block.syncer.interval", "interval to sync blocks").Default("1m").DurationVar(&opts.syncerInterval)
 	cmd.Flag("block.syncer.concurrency", "concurrency for loading blocks").Default("1").IntVar(&opts.syncerConcurrency)
+	cmd.Flag("block.syncer.shard-concurrency", "concurrency for loading shards within each block (0 = sequential)").Default("0").IntVar(&opts.syncerShardConcurrency)
 	cmd.Flag("block.syncer.read-buffer-size", "read buffer size for blocks").Default("2MiB").BytesVar(&opts.syncerReadBufferSize)
 	cmd.Flag("block.filter.type", "").Default("all-metas").EnumVar(&opts.filterType, "thanos-backfill", "all-metas")
 	cmd.Flag("block.filter.thanos-backfill.endpoint", "endpoint to ignore for backfill").StringVar(&opts.filterThanosBackfillEndpoint)
