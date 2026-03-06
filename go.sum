@@ -352,6 +352,7 @@ github.com/google/go-querystring v1.0.0/go.mod h1:odCYkC5MyYFN7vkCjXpyrEuKhc/BUO
 github.com/google/go-querystring v1.1.0 h1:AnCroh3fv4ZBgVIf1Iwtovgjaw/GiKJo8M8yD/fhyJ8=
 github.com/google/go-querystring v1.1.0/go.mod h1:Kcdr2DB4koayq7X8pmAG4sNG59So17icRSOU623lUBU=
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
+github.com/google/martian v2.1.0+incompatible h1:/CP5g8u/VJHijgedC/Legn3BAbAaWPgecwXBIDzw5no=
 github.com/google/martian v2.1.0+incompatible/go.mod h1:9I4somxYTbIHy5NJKHRl3wXiIaQGbYVAs8BPL6v8lEs=
 github.com/google/martian/v3 v3.0.0/go.mod h1:y5Zk1BBys9G+gd6Jrk0W3cC1+ELVxBWuIGO+w/tUAp0=
 github.com/google/martian/v3 v3.1.0/go.mod h1:y5Zk1BBys9G+gd6Jrk0W3cC1+ELVxBWuIGO+w/tUAp0=
@@ -615,8 +616,6 @@ github.com/prometheus/otlptranslator v0.0.0-20250620074007-94f535e0c588 h1:QlySq
 github.com/prometheus/otlptranslator v0.0.0-20250620074007-94f535e0c588/go.mod h1:P8AwMgdD7XEr6QRUJ2QWLpiAZTgTE2UYgjlu3svompI=
 github.com/prometheus/procfs v0.17.0 h1:FuLQ+05u4ZI+SS/w9+BWEM2TXiHKsUQ9TADiRH7DuK0=
 github.com/prometheus/procfs v0.17.0/go.mod h1:oPQLaDAMRbA+u8H5Pbfq+dl3VDAvHxMUOVhe0wYB2zw=
-github.com/prometheus/prometheus v0.306.0-rc.0 h1:4vlWFMOa+vtXvsh/0GtNjDaBJxguRCuh+wRrkDU4vj4=
-github.com/prometheus/prometheus v0.306.0-rc.0/go.mod h1:7hMSGyZHt0dcmZ5r4kFPJ/vxPQU99N5/BGwSPDxeZrQ=
 github.com/prometheus/sigv4 v0.2.0 h1:qDFKnHYFswJxdzGeRP63c4HlH3Vbn1Yf/Ao2zabtVXk=
 github.com/prometheus/sigv4 v0.2.0/go.mod h1:D04rqmAaPPEUkjRQxGqjoxdyJuyCh6E0M18fZr0zBiE=
 github.com/puzpuzpuz/xsync/v3 v3.5.1 h1:GJYJZwO6IdxN/IKbneznS6yPkVC+c3zyY/j19c++5Fg=
@@ -687,6 +686,8 @@ github.com/thanos-io/promql-engine v0.0.0-20250824180825-bb56ceb89cf6 h1:MdV04NH
 github.com/thanos-io/promql-engine v0.0.0-20250824180825-bb56ceb89cf6/go.mod h1:MOFN0M1nDMcWZg1t4iF39sOard/K4SWgO/HHSODeDIc=
 github.com/thanos-io/thanos v0.39.3-0.20250821133311-801bda7a90c4 h1:uKmIdPxl7mWqkXTZk28PqSJ/5uVWjKUHhNoZoSM0EDI=
 github.com/thanos-io/thanos v0.39.3-0.20250821133311-801bda7a90c4/go.mod h1:mcuceOJJIrHmO+TVoT8Izf4dC7V0YWCYfRH8DhlwNPs=
+github.com/thanos-io/thanos-prometheus v0.0.0-20260304102658-a844cabec015 h1:F1HeHIgKyrQvWNvciSWWDRYN2FUgoLCXuGZoWxu7EWM=
+github.com/thanos-io/thanos-prometheus v0.0.0-20260304102658-a844cabec015/go.mod h1:7hMSGyZHt0dcmZ5r4kFPJ/vxPQU99N5/BGwSPDxeZrQ=
 github.com/tinylib/msgp v1.3.0 h1:ULuf7GPooDaIlbyvgAxBV/FI7ynli6LZ1/nVUNu+0ww=
 github.com/tinylib/msgp v1.3.0/go.mod h1:ykjzy2wzgrlvpDCRc4LA8UXy6D8bzMSuAF3WD57Gok0=
 github.com/tjhop/slog-gokit v0.1.4 h1:uj/vbDt3HaF0Py8bHPV4ti/s0utnO0miRbO277FLBKM=

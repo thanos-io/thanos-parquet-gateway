@@ -49,23 +49,6 @@ type Convertible interface {
 	fmt.Stringer
 }
 
-// This is mostly used for testing when using tsdb.Head as Convertible.
-type HeadBlock struct {
-	*tsdb.Head
-	OverrideBLID string
-}
-
-func (hb *HeadBlock) String() string {
-	if hb.OverrideBLID != "" {
-		return hb.OverrideBLID
-	}
-	return hb.Head.String()
-}
-
-func (hb *HeadBlock) Dir() string {
-	return ""
-}
-
 type convertOpts struct {
 	numRowGroups        int
 	rowGroupSize        int
@@ -173,6 +156,28 @@ func WriteStreamDescriptorFile(
 		return err
 	}
 	return bkt.Upload(ctx, schema.StreamDescriptorFileNameForBlock(extLabels.Hash()), bytes.NewReader(data))
+}
+
+func (i *indexReaderSeries) Next() bool {
+	if !i.reader.postings.Next() {
+		return false
+	}
+
+	i.sb.Reset()
+	if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks, index.SeriesNoCopy); err != nil {
+		i.l = labels.EmptyLabels()
+		return false
+	}
+
+	hasChunks := slices.ContainsFunc(i.chks, func(chk chunks.Meta) bool {
+		return i.mint <= chk.MaxTime && chk.MinTime <= i.maxt
+	})
+	if !hasChunks {
+		return i.Next()
+	}
+	i.sb.Overwrite(&i.l)
+
+	return true
 }
 
 func ConvertTSDBBlock(
@@ -384,7 +389,7 @@ func shardedIndexRowReader(
 				refs = append(refs, series.ref)
 			}
 			postings := index.NewListPostings(refs)
-			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
+			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false, true)
 			seriesSets = append(seriesSets, seriesSet)
 		}
 
@@ -418,28 +423,6 @@ type indexReaderSeries struct {
 	sb labels.ScratchBuilder
 
 	chks []chunks.Meta
-}
-
-func (i *indexReaderSeries) Next() bool {
-	if !i.reader.postings.Next() {
-		return false
-	}
-
-	i.sb.Reset()
-	if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks); err != nil {
-		i.l = labels.EmptyLabels()
-		return false
-	}
-
-	hasChunks := slices.ContainsFunc(i.chks, func(chk chunks.Meta) bool {
-		return i.mint <= chk.MaxTime && chk.MinTime <= i.maxt
-	})
-	if !hasChunks {
-		return i.Next()
-	}
-	i.l = i.sb.Labels()
-
-	return true
 }
 
 func (i *indexReaderSeries) At() blockSeries {
@@ -511,16 +494,21 @@ func shardSeries(
 	shardIdx := 0
 	uniqueSeriesCount := 0
 	shardUniqueCount := 0
-	matchLabels := labels.Labels{}
+	var curHash uint64
 	maxSeriesPerShard := opts.numRowGroups * opts.rowGroupSize
 
 	for it.Next() {
 		v := it.At()
 
-		if labels.Compare(v.labels, matchLabels) != 0 {
+		if curHash != v.labels.Hash() {
 			// New unique series: accumulate its label columns.
 			v.labels.Range(func(l labels.Label) {
-				shardLabelColumns[shardIdx][l.Name] = struct{}{}
+				_, ok := shardLabelColumns[shardIdx][l.Name]
+				if ok {
+					return
+				}
+
+				shardLabelColumns[shardIdx][strings.Clone(l.Name)] = struct{}{}
 			})
 
 			// Cut a new shard every:
@@ -532,7 +520,12 @@ func shardSeries(
 				shards = append(shards, make(map[int][]blockSeries))
 				newLabelCols := make(map[string]struct{})
 				v.labels.Range(func(l labels.Label) {
-					newLabelCols[l.Name] = struct{}{}
+					_, ok := newLabelCols[l.Name]
+					if ok {
+						return
+					}
+
+					newLabelCols[strings.Clone(l.Name)] = struct{}{}
 				})
 				shardLabelColumns = append(shardLabelColumns, newLabelCols)
 				shardUniqueCount = 0
@@ -540,7 +533,7 @@ func shardSeries(
 
 			uniqueSeriesCount++
 			shardUniqueCount++
-			matchLabels = v.labels
+			curHash = v.labels.Hash()
 		}
 
 		// Add to current shard (same labelset as previous series does not increment unique count).

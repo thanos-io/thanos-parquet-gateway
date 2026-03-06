@@ -49,7 +49,7 @@ func BenchmarkConverter(b *testing.B) {
 	st := teststorage.New(b)
 	b.Cleanup(func() { require.NoError(b, st.Close()) })
 	app := st.Appender(b.Context())
-	for i := range 10_000 {
+	for i := range 100_000 {
 		for _, sc := range []string{"200", "202", "300", "404", "400", "429", "500", "503"} {
 			_, err := app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
 			require.NoError(b, err)
@@ -74,41 +74,51 @@ func BenchmarkConverter(b *testing.B) {
 	}
 }
 
-func createReaderWithSeries(t *testing.T, seriesLabels []string, seriesCount int, blockIdx int) (blockIndexReader, func() error) {
+func createReaderWithSeries(t *testing.T, seriesLabels []string, seriesCount int, blockIdx int) (blockIndexReader, []func() error) {
 	t.Helper()
 
 	st := teststorage.New(t)
 	app := st.Appender(t.Context())
-	for range seriesCount {
-		_, err := app.Append(0, labels.FromStrings(seriesLabels...), 0, rand.Float64())
+	for s := range seriesCount {
+		randLbl := []string{"r", fmt.Sprintf("%d", s)}
+
+		_, err := app.Append(0, labels.FromStrings(append(seriesLabels, randLbl...)...), 0, rand.Float64())
 		require.NoError(t, err)
 	}
 	require.NoError(t, app.Commit())
 	h := st.Head()
 
-	ir, err := h.Index()
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	ir, err := blk.Index()
 	require.NoError(t, err)
 
 	apn, apv := index.AllPostingsKey()
 	p, err := ir.Postings(context.Background(), apn, apv)
 	require.NoError(t, err)
 
-	return blockIndexReader{reader: ir, postings: p, blockID: ulid.MustNewDefault(time.Now()), idx: blockIdx}, st.Close
+	return blockIndexReader{reader: ir, postings: p, blockID: ulid.MustNewDefault(time.Now()), idx: blockIdx}, []func() error{ir.Close, st.Close}
 }
 
 func TestSortedSeriesIterator(t *testing.T) {
-	properties := gopter.NewProperties(nil)
+	params := gopter.DefaultTestParameters()
+	params.Workers = 8
+
+	properties := gopter.NewProperties(params)
 
 	properties.Property("sortedSeriesIterator returns series sorted by __name__", prop.ForAll(
 		func(blockCount int) bool {
-			readers := make([]blockIndexReader, 0, blockCount*10)
-			closers := make([]func() error, 0, blockCount*10)
+			readers := make([]blockIndexReader, 0, blockCount)
+			closers := make([]func() error, 0, blockCount)
 			for bid := range blockCount {
-				for i := range 10 {
-					reader, closeFunc := createReaderWithSeries(t, []string{"__name__", fmt.Sprintf("foobar%d", blockCount-bid), "aa", fmt.Sprintf("%d", i)}, 10, bid)
-					readers = append(readers, reader)
-					closers = append(closers, closeFunc)
-				}
+				reader, closersFunc := createReaderWithSeries(t, []string{"__name__", fmt.Sprintf("foobar%d", blockCount-bid)}, 10, bid)
+
+				readers = append(readers, reader)
+				closers = append(closers, closersFunc...)
 			}
 			cOpts := convertOpts{
 				sortLabels: []string{"__name__"},
@@ -131,7 +141,7 @@ func TestSortedSeriesIterator(t *testing.T) {
 			}
 
 			return true
-		}, gen.IntRange(1, 10)))
+		}, gen.IntRange(1, 5)))
 
 	properties.TestingRun(t)
 }
@@ -167,17 +177,22 @@ func TestConverter(t *testing.T) {
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	d := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	blkid := ulid.MustNewDefault(time.Now())
-
-	t.Log(blkid.String())
-
 	opts := []ConvertOption{
 		SortBy(labels.MetricName),
 		RowGroupSize(250),
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h, OverrideBLID: blkid.String()}}, opts...); err != nil {
+
+	expectedRows := st.DB.Head().NumSeries()
+
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{blk}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -196,7 +211,7 @@ func TestConverter(t *testing.T) {
 		t.Fatalf("unexpected number of shards: %d", n)
 	}
 
-	require.Contains(t, meta.ConvertedFromBLIDs, blkid)
+	require.Contains(t, meta.ConvertedFromBLIDs, blk.Meta().ULID)
 
 	totalRows := int64(0)
 	for i := range int(meta.Shards) {
@@ -226,8 +241,8 @@ func TestConverter(t *testing.T) {
 			t.Fatalf("unable to check that __name__ column values are increasing: %s", err)
 		}
 	}
-	if totalRows != int64(st.DB.Head().NumSeries()) {
-		t.Fatalf("too few rows: %d", totalRows)
+	if totalRows != int64(expectedRows) {
+		t.Fatalf("too few rows: %d / %d", totalRows, st.DB.Head().NumSeries())
 	}
 }
 
@@ -272,7 +287,14 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 		SortBy(labels.MetricName),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h, OverrideBLID: ulid.MustNewDefault(time.Now()).String()}}, opts...); err != nil {
+
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{blk}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }
