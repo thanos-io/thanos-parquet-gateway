@@ -49,7 +49,7 @@ func BenchmarkConverter(b *testing.B) {
 	st := teststorage.New(b)
 	b.Cleanup(func() { require.NoError(b, st.Close()) })
 	app := st.Appender(b.Context())
-	for i := range 10_000 {
+	for i := range 100_000 {
 		for _, sc := range []string{"200", "202", "300", "404", "400", "429", "500", "503"} {
 			_, err := app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
 			require.NoError(b, err)

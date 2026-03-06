@@ -9,6 +9,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus v1.0.1
 	github.com/json-iterator/go v1.1.12
+	github.com/leanovate/gopter v0.2.11
 	github.com/mostynb/go-grpc-compression v1.2.3
 	github.com/oklog/run v1.2.0
 	github.com/oklog/ulid/v2 v2.1.1
@@ -56,7 +57,6 @@ require (
 	github.com/knadh/koanf/maps v0.1.2 // indirect
 	github.com/knadh/koanf/providers/confmap v1.0.0 // indirect
 	github.com/knadh/koanf/v2 v2.2.1 // indirect
-	github.com/leanovate/gopter v0.2.11 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/minio/crc64nvme v1.0.1 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
@@ -225,3 +225,5 @@ require (
 	k8s.io/klog/v2 v2.130.1 // indirect
 	k8s.io/utils v0.0.0-20250604170112-4c0f3b243397 // indirect
 )
+
+replace github.com/prometheus/prometheus => github.com/thanos-io/thanos-prometheus v0.0.0-20260304102658-a844cabec015
