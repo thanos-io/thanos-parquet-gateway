@@ -30,6 +30,7 @@ import (
 	"github.com/thanos-io/objstore/client"
 	"github.com/thanos-io/thanos/pkg/runutil"
 
+	cftracing "github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/locate"
 )
 
@@ -102,6 +103,11 @@ func (s slogAdapter) Log(args ...any) error {
 }
 
 type tracingOpts struct {
+	// Config file options (Thanos-compatible)
+	configFile string
+	config     string
+
+	// Legacy flag-based options
 	exporterType string
 
 	// jaeger opts
@@ -111,7 +117,26 @@ type tracingOpts struct {
 	samplingType  string
 }
 
-func setupTracing(ctx context.Context, opts tracingOpts) error {
+func setupTracing(ctx context.Context, logger *slog.Logger, opts tracingOpts) error {
+	// First, check if config file is provided (Thanos-compatible format)
+	if opts.configFile != "" || opts.config != "" {
+		var confContentYaml []byte
+		var err error
+
+		if opts.configFile != "" {
+			confContentYaml, err = os.ReadFile(opts.configFile)
+			if err != nil {
+				return fmt.Errorf("unable to read tracing config file: %w", err)
+			}
+		} else {
+			confContentYaml = []byte(opts.config)
+		}
+
+		confContentYaml = ExpandEnvParens(confContentYaml)
+		return cftracing.SetupTracingFromConfig(ctx, logger, confContentYaml)
+	}
+
+	// Fall back to legacy flag-based configuration
 	var (
 		exporter trace.SpanExporter
 		err      error
