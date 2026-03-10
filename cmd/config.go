@@ -14,14 +14,6 @@ import (
 	"regexp"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/jaeger" //nolint:staticcheck
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
-	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
-	"go.opentelemetry.io/otel/trace/noop"
-
 	"github.com/alecthomas/units"
 	"github.com/oklog/run"
 	"github.com/prometheus/client_golang/prometheus"
@@ -136,56 +128,72 @@ func setupTracing(ctx context.Context, logger *slog.Logger, opts tracingOpts) er
 		return cftracing.SetupTracingFromConfig(ctx, logger, confContentYaml)
 	}
 
-	// Fall back to legacy flag-based configuration
-	var (
-		exporter trace.SpanExporter
-		err      error
-	)
-	switch opts.exporterType {
-	case "JAEGER":
-		exporter, err = jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(opts.jaegerEndpoint)))
-		if err != nil {
-			return err
-		}
-	case "STDOUT":
-		exporter, err = stdouttrace.New()
-		if err != nil {
-			return err
-		}
-	case "":
-		otel.SetTracerProvider(noop.NewTracerProvider())
-		return nil
-	default:
-		return fmt.Errorf("invalid exporter type %s", opts.exporterType)
-	}
-	var sampler trace.Sampler
-	switch opts.samplingType {
-	case "PROBABILISTIC":
-		sampler = trace.TraceIDRatioBased(opts.samplingParam)
-	case "ALWAYS":
-		sampler = trace.AlwaysSample()
-	case "NEVER":
-		sampler = trace.NeverSample()
-	default:
-		return fmt.Errorf("invalid sampling type %s", opts.samplingType)
-	}
-	r, err := resource.New(ctx,
-		resource.WithAttributes(
-			semconv.ServiceName("parquet-gateway"),
-			semconv.ServiceVersion("v0.0.0"),
-		),
-	)
+	// Convert legacy flag-based configuration to TracingConfig
+	tracingConfig, err := convertLegacyTracingFlags(logger, opts)
 	if err != nil {
 		return err
 	}
 
-	tracerProvider := trace.NewTracerProvider(
-		trace.WithSampler(trace.ParentBased(sampler)),
-		trace.WithBatcher(exporter),
-		trace.WithResource(r),
-	)
-	otel.SetTracerProvider(tracerProvider)
-	return nil
+	// Use the parsed config loader to avoid serialization/deserialization
+	return cftracing.SetupTracingFromParsedConfig(ctx, logger, tracingConfig)
+}
+
+// convertLegacyTracingFlags converts legacy flag-based tracing configuration
+// to the new TracingConfig format.
+func convertLegacyTracingFlags(logger *slog.Logger, opts tracingOpts) (*cftracing.TracingConfig, error) {
+	// Handle no tracing
+	if opts.exporterType == "" {
+		return &cftracing.TracingConfig{}, nil
+	}
+
+	// Handle STDOUT - not supported by thanos packages
+	if opts.exporterType == "STDOUT" {
+		logger.Warn("STDOUT tracing is not supported by file-based configuration. Tracing will be disabled. Please use OTLP or JAEGER providers instead.")
+		return &cftracing.TracingConfig{}, nil
+	}
+
+	// Handle JAEGER
+	if opts.exporterType == "JAEGER" {
+		config := map[string]any{
+			"service_name": "parquet-gateway",
+		}
+
+		// Add endpoint if provided
+		if opts.jaegerEndpoint != "" {
+			config["endpoint"] = opts.jaegerEndpoint
+		}
+
+		// Convert sampling type
+		samplerType, samplerParam := convertSamplingToJaeger(opts.samplingType, opts.samplingParam)
+		if samplerType != "" {
+			config["sampler_type"] = samplerType
+		}
+		if samplerParam != 0 {
+			config["sampler_param"] = samplerParam
+		}
+
+		return &cftracing.TracingConfig{
+			Type:   cftracing.ProviderJaeger,
+			Config: config,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("invalid exporter type %s", opts.exporterType)
+}
+
+// convertSamplingToJaeger converts legacy sampling configuration to Jaeger-compatible format.
+func convertSamplingToJaeger(samplingType string, samplingParam float64) (string, float64) {
+	switch samplingType {
+	case "PROBABILISTIC":
+		return "probabilistic", samplingParam
+	case "ALWAYS":
+		return "const", 1.0
+	case "NEVER":
+		return "const", 0.0
+	default:
+		// Default to const sampler with always sample
+		return "const", 1.0
+	}
 }
 
 type apiOpts struct {

@@ -90,3 +90,73 @@ config:
 		t.Fatal("Expected error for invalid tracing type, but got nil")
 	}
 }
+
+func TestSetupTracingFromParsedConfig_OTLP(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	tracingConf := &TracingConfig{
+		Type: ProviderOTLP,
+		Config: map[string]any{
+			"client_type":  "grpc",
+			"service_name": "test-service",
+			"endpoint":     "localhost:4317",
+			"insecure":     true,
+			"sampler_type": "alwayssample",
+		},
+	}
+
+	err := SetupTracingFromParsedConfig(ctx, logger, tracingConf)
+	if err != nil {
+		t.Fatalf("SetupTracingFromParsedConfig failed: %v", err)
+	}
+
+	// Verify that a tracer provider was set
+	tracer := otel.GetTracerProvider()
+	if tracer == nil {
+		t.Fatal("Expected tracer provider to be set, but got nil")
+	}
+}
+
+func TestSetupTracingFromParsedConfig_Jaeger(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	tracingConf := &TracingConfig{
+		Type: ProviderJaeger,
+		Config: map[string]any{
+			"service_name":  "test-service",
+			"sampler_type":  "const",
+			"sampler_param": float64(1),
+		},
+	}
+
+	err := SetupTracingFromParsedConfig(ctx, logger, tracingConf)
+	if err != nil {
+		t.Fatalf("SetupTracingFromParsedConfig failed: %v", err)
+	}
+
+	// Verify that a tracer provider was set
+	tracer := otel.GetTracerProvider()
+	if tracer == nil {
+		t.Fatal("Expected tracer provider to be set, but got nil")
+	}
+}
+
+func TestSetupTracingFromParsedConfig_Empty(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Nil config
+	err := SetupTracingFromParsedConfig(ctx, logger, nil)
+	if err != nil {
+		t.Fatalf("SetupTracingFromParsedConfig failed with nil config: %v", err)
+	}
+
+	// Empty config
+	tracingConf := &TracingConfig{}
+	err = SetupTracingFromParsedConfig(ctx, logger, tracingConf)
+	if err != nil {
+		t.Fatalf("SetupTracingFromParsedConfig failed with empty config: %v", err)
+	}
+}
