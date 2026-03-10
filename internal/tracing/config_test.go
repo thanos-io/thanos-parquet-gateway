@@ -13,6 +13,32 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
+func TestSetupTracingFromConfig_OTLP(t *testing.T) {
+	ctx := context.Background()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	yamlConfig := []byte(`
+type: OTLP
+config:
+  client_type: grpc
+  service_name: test-service
+  endpoint: localhost:4317
+  insecure: true
+  sampler_type: alwayssample
+`)
+
+	err := SetupTracingFromConfig(ctx, logger, yamlConfig)
+	if err != nil {
+		t.Fatalf("SetupTracingFromConfig failed: %v", err)
+	}
+
+	// Verify that a tracer provider was set
+	tracer := otel.GetTracerProvider()
+	if tracer == nil {
+		t.Fatal("Expected tracer provider to be set, but got nil")
+	}
+}
+
 func TestSetupTracingFromConfig_Jaeger(t *testing.T) {
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
