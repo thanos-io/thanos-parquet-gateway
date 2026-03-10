@@ -271,9 +271,11 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	switch results := res.Value.(type) {
 	case promql.Vector:
 		for _, result := range results {
+			samples, histograms := prompb.SamplesFromPromqlSamples(result)
 			series := &prompb.TimeSeries{
-				Samples: []prompb.Sample{{Value: float64(result.F), Timestamp: int64(result.T)}},
-				Labels:  zLabelsFromMetric(result.Metric),
+				Samples:    samples,
+				Histograms: histograms,
+				Labels:     zLabelsFromMetric(result.Metric),
 			}
 			if err := srv.Send(querypb.NewQueryResponse(series)); err != nil {
 				return err
@@ -333,9 +335,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	switch results := res.Value.(type) {
 	case promql.Matrix:
 		for _, result := range results {
+			samples, histograms := prompb.SamplesFromPromqlSeries(result)
 			series := &prompb.TimeSeries{
-				Samples: samplesFromModel(result.Floats),
-				Labels:  zLabelsFromMetric(result.Metric),
+				Samples:    samples,
+				Histograms: histograms,
+				Labels:     zLabelsFromMetric(result.Metric),
 			}
 			if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
 				return err
@@ -343,9 +347,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 		}
 	case promql.Vector:
 		for _, result := range results {
+			samples, histograms := prompb.SamplesFromPromqlSamples(result)
 			series := &prompb.TimeSeries{
-				Samples: []prompb.Sample{{Value: float64(result.F), Timestamp: int64(result.T)}},
-				Labels:  zLabelsFromMetric(result.Metric),
+				Samples:    samples,
+				Histograms: histograms,
+				Labels:     zLabelsFromMetric(result.Metric),
 			}
 			if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
 				return err
@@ -550,17 +556,6 @@ func zLabelSetsFromPromLabels(lss ...labels.Labels) []labelpb.ZLabelSet {
 	}
 
 	return sets
-}
-
-func samplesFromModel(samples []promql.FPoint) []prompb.Sample {
-	result := make([]prompb.Sample, 0, len(samples))
-	for _, s := range samples {
-		result = append(result, prompb.Sample{
-			Value:     float64(s.F),
-			Timestamp: int64(s.T),
-		})
-	}
-	return result
 }
 
 func toQueryStats(stats *stats.Statistics) *querypb.QueryStats {
