@@ -159,25 +159,27 @@ func WriteStreamDescriptorFile(
 }
 
 func (i *indexReaderSeries) Next() bool {
-	if !i.reader.postings.Next() {
-		return false
-	}
+	for {
+		if !i.reader.postings.Next() {
+			return false
+		}
 
-	i.sb.Reset()
-	if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks, index.SeriesNoCopy); err != nil {
-		i.l = labels.EmptyLabels()
-		return false
-	}
+		i.sb.Reset()
+		if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks, index.SeriesNoCopy); err != nil {
+			i.l = labels.EmptyLabels()
+			return false
+		}
 
-	hasChunks := slices.ContainsFunc(i.chks, func(chk chunks.Meta) bool {
-		return i.mint <= chk.MaxTime && chk.MinTime <= i.maxt
-	})
-	if !hasChunks {
-		return i.Next()
-	}
-	i.sb.Overwrite(&i.l)
+		hasChunks := slices.ContainsFunc(i.chks, func(chk chunks.Meta) bool {
+			return i.mint <= chk.MaxTime && chk.MinTime <= i.maxt
+		})
+		if !hasChunks {
+			continue
+		}
+		i.sb.Overwrite(&i.l)
 
-	return true
+		return true
+	}
 }
 
 func ConvertTSDBBlock(
