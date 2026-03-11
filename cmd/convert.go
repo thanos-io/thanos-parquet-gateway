@@ -57,8 +57,8 @@ type conversionOpts struct {
 	blockDownloadConcurrency int
 	encodingConcurrency      int
 	writeConcurrency         int
-	minTimeOffset            time.Duration
-	maxTimeOffset            time.Duration
+	minTimeDate              string
+	maxTimeDate              string
 	tempDir                  string
 }
 
@@ -79,9 +79,8 @@ func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.recompress", "recompress chunks").Default("true").BoolVar(&opts.recompress)
 	cmd.Flag("convert.grace-period", "dont convert for dates younger than this").Default("48h").DurationVar(&opts.gracePeriod)
 	cmd.Flag("convert.max-plan-days", "soft limit for the number of days to plan conversions for").Default("2").IntVar(&opts.maxDays)
-	cmd.Flag("convert.min-time", "relative start offset for conversion window (e.g. -168h). Conversion rounds to day start (00:00:00 UTC)").Default("0s").DurationVar(&opts.minTimeOffset)
-	cmd.Flag("convert.max-time", "relative end offset for conversion window (e.g. -48h). Conversion rounds to next day start (exclusive)").Default("0s").DurationVar(&opts.maxTimeOffset)
-
+	cmd.Flag("convert.min-time", "start date for conversion window in YYYY-MM-DD format (e.g. 2025-12-20). Conversion rounds to day start (00:00:00 UTC)").Default("").StringVar(&opts.minTimeDate)
+	cmd.Flag("convert.max-time", "end date for conversion window in YYYY-MM-DD format (e.g. 2025-12-23). Conversion rounds to next day start (exclusive)").Default("").StringVar(&opts.maxTimeDate)
 	cmd.Flag("convert.rowgroup.size", "size of rowgroups").Default("1_000_000").IntVar(&opts.rowGroupSize)
 	cmd.Flag("convert.rowgroup.count", "rowgroups per shard").Default("6").IntVar(&opts.rowGroupCount)
 	cmd.Flag("convert.sorting.label", "label to sort by").Default("__name__").StringsVar(&opts.sortLabels)
@@ -210,7 +209,7 @@ func advanceConversion(
 		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
 	}
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams,opts.minTimeOffset, opts.maxTimeOffset)
+	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams, opts.minTimeDate, opts.maxTimeDate)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
