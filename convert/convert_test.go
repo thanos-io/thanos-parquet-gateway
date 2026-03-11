@@ -25,7 +25,9 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/stretchr/testify/require"
@@ -423,3 +425,76 @@ func nameColumnValuesAreIncreasing(t testing.TB, pf *parquet.File) error {
 	}
 	return nil
 }
+
+type fakePostings struct {
+	seriesCount int64
+}
+
+func (f *fakePostings) Next() bool {
+	f.seriesCount--
+	return f.seriesCount > 0
+}
+
+func (f *fakePostings) At() storage.SeriesRef { return 0 }
+func (f *fakePostings) Err() error            { return nil }
+func (f *fakePostings) Seek(_ storage.SeriesRef) bool {
+	return false
+}
+
+func TestConverterStackOverflow(t *testing.T) {
+	const seriesCount = 1_000_000
+
+	reader := blockIndexReader{
+		reader:   &outOfRangeIndexReader{},
+		postings: &fakePostings{seriesCount: seriesCount},
+	}
+
+	it := &indexReaderSeries{
+		reader: reader,
+		mint:   1,
+		maxt:   math.MaxInt64,
+		sb:     labels.NewScratchBuilder(10),
+		chks:   make([]chunks.Meta, 0, 128),
+	}
+
+	for it.Next() {
+		t.Fatal("expected no series since all chunks are outside mint/maxt")
+	}
+}
+
+type outOfRangeIndexReader struct{}
+
+func (outOfRangeIndexReader) Symbols() index.StringIter { return index.NewStringListIter(nil) }
+func (outOfRangeIndexReader) SortedLabelValues(_ context.Context, _ string, _ *storage.LabelHints, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) LabelValues(_ context.Context, _ string, _ *storage.LabelHints, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) Postings(_ context.Context, _ string, _ ...string) (index.Postings, error) {
+	return index.EmptyPostings(), nil
+}
+func (outOfRangeIndexReader) PostingsForLabelMatching(_ context.Context, _ string, _ func(string) bool) index.Postings {
+	return index.EmptyPostings()
+}
+func (outOfRangeIndexReader) PostingsForAllLabelValues(_ context.Context, _ string) index.Postings {
+	return index.EmptyPostings()
+}
+func (outOfRangeIndexReader) SortedPostings(p index.Postings) index.Postings { return p }
+func (outOfRangeIndexReader) ShardedPostings(p index.Postings, _, _ uint64) index.Postings {
+	return p
+}
+func (outOfRangeIndexReader) Series(_ storage.SeriesRef, _ *labels.ScratchBuilder, chks *[]chunks.Meta, _ ...index.SeriesParam) error {
+	*chks = append((*chks)[:0], chunks.Meta{MinTime: 0, MaxTime: 0})
+	return nil
+}
+func (outOfRangeIndexReader) LabelNames(_ context.Context, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) LabelValueFor(_ context.Context, _ storage.SeriesRef, _ string) (string, error) {
+	return "", nil
+}
+func (outOfRangeIndexReader) LabelNamesFor(_ context.Context, _ index.Postings) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) Close() error { return nil }
