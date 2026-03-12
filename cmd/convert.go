@@ -19,6 +19,7 @@ import (
 	"github.com/oklog/run"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/thanos-io/objstore"
@@ -43,9 +44,10 @@ type convertOpts struct {
 }
 
 type conversionOpts struct {
-	runInterval   time.Duration
-	runTimeout    time.Duration
-	retryInterval time.Duration
+	runInterval      time.Duration
+	progressInterval time.Duration
+	runTimeout       time.Duration
+	retryInterval    time.Duration
 
 	gracePeriod              time.Duration
 	maxDays                  int
@@ -72,6 +74,7 @@ func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
 
 func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
 	cmd.Flag("convert.run-interval", "interval to run conversion on").Default("1h").DurationVar(&opts.runInterval)
+	cmd.Flag("convert.progress-interval", "interval to run progress calculation on").Default("5m").DurationVar(&opts.progressInterval)
 	cmd.Flag("convert.run-timeout", "timeout for a single conversion step").Default("24h").DurationVar(&opts.runTimeout)
 	cmd.Flag("convert.retry-interval", "interval to retry a single conversion after an error").Default("1m").DurationVar(&opts.retryInterval)
 	cmd.Flag("convert.tempdir", "directory for temporary state").Default(os.TempDir()).StringVar(&opts.tempDir)
@@ -145,9 +148,37 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 			return fmt.Errorf("unable to setup parquet discovery: %s", err)
 		}
 
+		planner := convert.NewPlanner(time.Now().Add(-opts.conversion.gracePeriod), opts.conversion.maxDays)
+		blkDir := filepath.Join(opts.conversion.tempDir, ".blocks")
+		bufferDir := filepath.Join(opts.conversion.tempDir, ".buffers")
+
+		convOpts := []convert.ConvertOption{
+			convert.SortBy(opts.conversion.sortLabels...),
+			convert.RowGroupSize(opts.conversion.rowGroupSize),
+			convert.RowGroupCount(opts.conversion.rowGroupCount),
+			convert.EncodingConcurrency(opts.conversion.encodingConcurrency),
+			convert.WriteConcurrency(opts.conversion.writeConcurrency),
+			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
+		}
+
 		ctx, cancel := context.WithCancel(context.Background())
+
+		g.Add(func() error {
+			todoConvert := promauto.With(reg).NewGauge(prometheus.GaugeOpts{
+				Name: "todo_convert_steps",
+				Help: "How many TODO steps were reported by the planner the last time",
+			})
+			return runutil.Repeat(opts.conversion.progressInterval, ctx.Done(), func() error {
+				plan := planner.Plan(tsdbDiscoverer.Streams(), parquetDiscoverer.Streams())
+				todoConvert.Set(float64(len(plan.Steps)))
+				return nil
+			})
+		}, func(_ error) {
+			cancel()
+		})
 		g.Add(func() error {
 			log.Info("Starting conversion", "sort_by", opts.conversion.sortLabels)
+
 			return runutil.Repeat(opts.conversion.runInterval, ctx.Done(), func() error {
 				iterCtx, iterCancel := context.WithTimeout(ctx, opts.conversion.runTimeout)
 				defer iterCancel()
@@ -156,15 +187,14 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 					// Sync parquet files once here so we have the latest view
 					log.Info("Discovering parquet blocks before conversion")
 					if err := parquetDiscoverer.Discover(iterCtx); err != nil {
-						log.Error("Unable to discover parquet blocks", "error", err)
 						return err
 					}
 					log.Info("Converting next blocks", "sort_by", opts.conversion.sortLabels)
-					if err := advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, opts.conversion); err != nil {
-						log.Error("Unable to convert blocks", "error", err)
-						return err
+					if err := cleanupDirectory(bufferDir); err != nil {
+						return fmt.Errorf("unable to clean up buffer directory: %w", err)
 					}
-					return nil
+
+					return advanceConversion(iterCtx, log, tsdbBkt, parquetBkt, tsdbDiscoverer, parquetDiscoverer, &planner, opts.conversion.downloadConcurrency, convOpts, blkDir)
 				}); err != nil {
 					log.Warn("Error during conversion", slog.Any("err", err))
 					return nil
@@ -186,17 +216,14 @@ func advanceConversion(
 	parquetBkt objstore.Bucket,
 	tsdbDiscoverer *locate.TSDBDiscoverer,
 	parquetDiscoverer *locate.Discoverer,
-	opts conversionOpts,
+	planner *convert.Planner,
+	downloadConcurrency int,
+	convOpts []convert.ConvertOption,
+	blkDir string,
 ) error {
-	blkDir := filepath.Join(opts.tempDir, ".blocks")
-	bufferDir := filepath.Join(opts.tempDir, ".buffers")
-
-	log.Info("Cleaning up previous state", "block_directory", blkDir, "buffer_directory", bufferDir)
+	log.Info("Cleaning up previous state", "block_directory", blkDir)
 	if err := cleanupDirectory(blkDir); err != nil {
 		return fmt.Errorf("unable to clean up block directory: %w", err)
-	}
-	if err := cleanupDirectory(bufferDir); err != nil {
-		return fmt.Errorf("unable to clean up buffer directory: %w", err)
 	}
 
 	parquetStreams := parquetDiscoverer.Streams()
@@ -207,7 +234,7 @@ func advanceConversion(
 		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
 	}
 
-	plan := convert.NewPlanner(time.Now().Add(-opts.gracePeriod), opts.maxDays).Plan(tsdbMetas, parquetStreams)
+	plan := planner.Plan(tsdbMetas, parquetStreams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil
@@ -233,7 +260,7 @@ func advanceConversion(
 		toDownload := blocksToDownload(step.Sources, prevBlocks)
 		log.Info("Blocks from previous step", slog.Any("ulids", ulidsFromConvertible(prevBlocks)))
 		log.Info("Blocks to download", slog.Any("ulids", ulidsFromMetas(toDownload)))
-		stepBlocks, err = downloadedBlocks(ctx, log, tsdbBkt, toDownload, blkDir, opts)
+		stepBlocks, err = downloadedBlocks(ctx, log, tsdbBkt, toDownload, blkDir, downloadConcurrency)
 		if err != nil {
 			// NOTE: we might have managed to open a few blocks, make sure to close them too.
 			closeBlocks(log, prevBlocks...)
@@ -257,14 +284,6 @@ func advanceConversion(
 		}
 
 		log.Info("Starting conversion", slog.String("date", step.Date.String()))
-		convOpts := []convert.ConvertOption{
-			convert.SortBy(opts.sortLabels...),
-			convert.RowGroupSize(opts.rowGroupSize),
-			convert.RowGroupCount(opts.rowGroupCount),
-			convert.EncodingConcurrency(opts.encodingConcurrency),
-			convert.WriteConcurrency(opts.writeConcurrency),
-			convert.ChunkBufferPool(parquet.NewFileBufferPool(bufferDir, "chunkbuf-*")),
-		}
 		if err := convert.ConvertTSDBBlock(ctx, parquetBkt, step.Date, step.ExternalLabels.Hash(), stepBlocks, convOpts...); err != nil {
 			closeBlocks(log, stepBlocks...)
 			return fmt.Errorf("unable to convert blocks for date %q: %s", step.Date, err)
@@ -319,7 +338,6 @@ func advanceConversion(
 	}
 	log.Info("Plan completed")
 
-	// Close all open blocks.
 	closeBlocks(log, prevBlocks...)
 	return nil
 }
@@ -402,7 +420,7 @@ func ulidsFromConvertible(blocks []convert.Convertible) []string {
 	return res
 }
 
-func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, opts conversionOpts) ([]convert.Convertible, error) {
+func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.BucketReader, metas []metadata.Meta, blkDir string, downloadConcurrency int) ([]convert.Convertible, error) {
 	metaCh := make(chan metadata.Meta, len(metas))
 
 	for _, m := range metas {
@@ -418,7 +436,7 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 	mu := sync.Mutex{}
 	res := make([]convert.Convertible, 0, len(metas))
 
-	for range opts.blockDownloadConcurrency {
+	for range downloadConcurrency {
 		g.Go(func() error {
 			for m := range metaCh {
 				src := m.ULID.String()
@@ -427,7 +445,7 @@ func downloadedBlocks(ctx context.Context, log *slog.Logger, bkt objstore.Bucket
 				log.Debug("block download start", "ulid", src)
 
 				if err := runutil.Retry(5*time.Second, ctx.Done(), func() error {
-					return downloadBlock(ctx, bkt, m, blkDir, opts, log)
+					return downloadBlock(ctx, bkt, m, blkDir, downloadConcurrency, log)
 				}); err != nil {
 					return fmt.Errorf("unable to download block %q: %w", src, err)
 				}
@@ -459,7 +477,7 @@ var copyPool = sync.Pool{
 	},
 }
 
-func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, opts conversionOpts, l *slog.Logger) error {
+func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata.Meta, blkDir string, downloadConcurrency int, l *slog.Logger) error {
 	src := meta.ULID.String()
 	dst := filepath.Join(blkDir, src)
 
@@ -499,7 +517,7 @@ func downloadBlock(ctx context.Context, bkt objstore.BucketReader, meta metadata
 		return err
 	})
 
-	for range opts.downloadConcurrency {
+	for range downloadConcurrency {
 		g.Go(func() error {
 			for name := range objPathCh {
 				fileDst := filepath.Join(dst, strings.TrimPrefix(name, src))
