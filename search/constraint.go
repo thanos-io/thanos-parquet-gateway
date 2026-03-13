@@ -285,14 +285,12 @@ func (ec *equalConstraint) skipByBloomfilter(cc parquet.ColumnChunk) (bool, erro
 }
 
 func Regex(path string, r *labels.FastRegexMatcher) Constraint {
-	return &regexConstraint{pth: path, cache: make(map[parquet.Value]bool), r: r}
+	return &regexConstraint{pth: path, r: r}
 }
 
 type regexConstraint struct {
-	pth   string
-	cache map[parquet.Value]bool
-
-	r *labels.FastRegexMatcher
+	pth string
+	r   *labels.FastRegexMatcher
 }
 
 func (rc *regexConstraint) String() string {
@@ -311,7 +309,7 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 	if !ok {
 		// If match empty, return rr (filter nothing)
 		// otherwise return empty
-		if rc.matches(parquet.ValueOf("")) {
+		if rc.r.MatchString("") {
 			return rr, nil
 		}
 		return []rowRange{}, nil
@@ -329,9 +327,12 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 	if err != nil {
 		return nil, fmt.Errorf("unable to read column index: %w", err)
 	}
+	nullMatch := rc.r.MatchString("")
 	var (
-		symbols = new(symbolTable)
-		res     = make([]rowRange, 0)
+		symbols     = new(symbolTable)
+		res         = make([]rowRange, 0)
+		lastDict    parquet.Dictionary
+		dictMatches []bool
 	)
 	for i := range cidx.NumPages() {
 		// If page does not intersect from, to; we can immediately discard it
@@ -349,7 +350,7 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 		}
 		// Page intersects [from, to] but we might be able to discard it with statistics
 		if cidx.NullPage(i) {
-			if rc.matches(parquet.ValueOf("")) {
+			if nullMatch {
 				res = append(res, rowRange{pfrom, pcount})
 			}
 			continue
@@ -369,13 +370,33 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 
 		pagesScanned.WithLabelValues(rc.path(), scanRegex, method).Add(1)
 
+		if symbols.dict != lastDict {
+			lastDict = symbols.dict
+			dictMatches = nil
+			if symbols.dict != nil {
+				dictMatches = make([]bool, symbols.dict.Len())
+				for k := range symbols.dict.Len() {
+					dictMatches[k] = rc.r.MatchString(yoloString(symbols.dict.Index(int32(k)).ByteArray()))
+				}
+			}
+		}
+
 		// The page has the value, we need to find the matching row ranges
 		n := int(pg.NumRows())
 		bl := int(max(pfrom, from) - pfrom)
 		br := n - int(pto-min(pto, to))
 		off, count := bl, 0
 		for j := bl; j < br; j++ {
-			if !rc.matches(symbols.Get(j)) {
+			idx := symbols.GetIndex(j)
+			var matched bool
+			if idx == -1 {
+				matched = nullMatch
+			} else if dictMatches != nil {
+				matched = dictMatches[idx]
+			} else {
+				matched = rc.r.MatchString(yoloString(symbols.Get(j).ByteArray()))
+			}
+			if !matched {
 				if count != 0 {
 					res = append(res, rowRange{pfrom + int64(off), int64(count)})
 				}
@@ -405,21 +426,11 @@ func (rc *regexConstraint) init(s *parquet.Schema) error {
 	if stringKind := parquet.String().Type().Kind(); c.Node.Type().Kind() != stringKind {
 		return fmt.Errorf("schema: cannot search value of kind %s in column of kind %s", stringKind, c.Node.Type().Kind())
 	}
-	rc.cache = make(map[parquet.Value]bool)
 	return nil
 }
 
 func (rc *regexConstraint) path() string {
 	return rc.pth
-}
-
-func (rc *regexConstraint) matches(v parquet.Value) bool {
-	accept, seen := rc.cache[v]
-	if !seen {
-		accept = rc.r.MatchString(yoloString(v.ByteArray()))
-		rc.cache[v] = accept
-	}
-	return accept
 }
 
 func yoloString(buf []byte) string {
