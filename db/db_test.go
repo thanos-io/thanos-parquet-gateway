@@ -9,18 +9,22 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"slices"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/cortexproject/promqlsmith"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/prometheus/prometheus/promql/promqltest"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/prometheus/prometheus/util/testutil"
 	"github.com/stretchr/testify/require"
@@ -1098,6 +1102,84 @@ func TestInstantQuery(t *testing.T) {
 	}
 }
 
+func FuzzConverter(f *testing.F) {
+	f.Add(10, 10)
+
+	f.Fuzz(func(t *testing.T, uniqueMetricCount, randSeed int) {
+		seriesSet := []labels.Labels{}
+
+		uniqueMetricCount = min(uniqueMetricCount, 1)
+		uniqueMetricCount = max(uniqueMetricCount, 10)
+
+		n := 1772449900693
+
+		st := teststorage.New(t)
+		t.Cleanup(func() { require.NoError(t, st.Close()) })
+		app := st.Appender(t.Context())
+		for i := range 3 {
+			for m := range uniqueMetricCount {
+				for _, sc := range []string{"200", "400", "500"} {
+					ls := labels.FromStrings("__name__", fmt.Sprintf("foo%d", m), "idx", fmt.Sprintf("%d", i), "status_code", sc)
+					_, err := app.Append(0, ls, 1772449900693, rand.Float64())
+					seriesSet = append(seriesSet, ls)
+					require.NoError(t, err)
+				}
+			}
+		}
+		require.NoError(t, app.Commit())
+
+		extLbls := schema.ExternalLabels{}
+		database := storageToDB(t, st, extLbls)
+
+		engine := promql.NewEngine(opts)
+
+		rnd := rand.New(rand.NewSource(int64(randSeed)))
+		opts := []promqlsmith.Option{
+			promqlsmith.WithEnabledFunctions([]*parser.Function{
+				parser.Functions["absent"],
+			}),
+			promqlsmith.WithEnabledExprs(
+				[]promqlsmith.ExprType{
+					promqlsmith.VectorSelector,
+					promqlsmith.MatrixSelector,
+					promqlsmith.BinaryExpr,
+					promqlsmith.AggregateExpr,
+					promqlsmith.SubQueryExpr,
+					promqlsmith.CallExpr,
+					promqlsmith.NumberLiteral,
+					promqlsmith.UnaryExpr,
+				},
+			),
+			promqlsmith.WithEnabledAggrs([]parser.ItemType{parser.SUM, parser.AVG, parser.MIN, parser.MAX}),
+		}
+		sm := promqlsmith.New(rnd, seriesSet, opts...)
+
+		for range 50 {
+			qi := sm.WalkInstantQuery()
+
+			opts := promql.NewPrometheusQueryOpts(false, 5*time.Second)
+
+			qt := time.UnixMilli(int64(n))
+
+			qp, err := engine.NewInstantQuery(t.Context(), database.Queryable(), opts, qi.String(), qt)
+			require.NoError(t, err)
+
+			t.Logf("query: %s", qi.String())
+
+			qpr := qp.Exec(t.Context())
+
+			qo, err := engine.NewInstantQuery(t.Context(), st.DB, opts, qi.String(), qt)
+			require.NoError(t, err)
+
+			qor := qo.Exec(t.Context())
+
+			if !cmp.Equal(qor, qpr, comparer) {
+				t.Fatalf("not equal:\nOLD:\n%+v\nNEW:\n%+v", qor, qpr)
+			}
+		}
+	})
+}
+
 func TestRangeQuery(t *testing.T) {
 	engine := promql.NewEngine(opts)
 	t.Cleanup(func() { require.NoError(t, engine.Close()) })
@@ -1356,10 +1438,17 @@ func storageToDBWithBkt(tb testing.TB, st *teststorage.TestStorage, bkt objstore
 	ctx := context.Background()
 
 	h := st.Head()
+
 	ts := time.UnixMilli(h.MinTime()).UTC()
 	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
 
-	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{&convert.HeadBlock{Head: h}}))
+	require.NoError(tb, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(tb, blocks, 1)
+	blk := blocks[0]
+
+	require.NoError(tb, convert.ConvertTSDBBlock(ctx, bkt, day, extLabels.Hash(), []convert.Convertible{blk}))
 	require.NoError(tb, convert.WriteStreamDescriptorFile(ctx, bkt, extLabels))
 
 	discoverer := locate.NewDiscoverer(bkt)

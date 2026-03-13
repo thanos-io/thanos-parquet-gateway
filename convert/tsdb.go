@@ -13,6 +13,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb/chunks"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/encoding"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -30,18 +31,19 @@ type indexRowReader struct {
 
 	concurrency int
 
-	chunksColumn0    int
-	chunksColumn1    int
-	chunksColumn2    int
-	labelIndexColumn int
-	labelHashColumn  int
+	columnCache map[string]int
 }
 
 var _ parquet.RowReader = &indexRowReader{}
 
-func columnIDForKnownColumn(schema *parquet.Schema, columnName string) int {
-	lc, _ := schema.Lookup(columnName)
-	return lc.ColumnIndex
+func (rr *indexRowReader) lookupColumnID(columnName string) int {
+	colID, ok := rr.columnCache[columnName]
+	if ok {
+		return colID
+	}
+	lc, _ := rr.schema.Lookup(columnName)
+	rr.columnCache[columnName] = lc.ColumnIndex
+	return rr.columnCache[columnName]
 }
 
 func (rr *indexRowReader) Close() error {
@@ -76,11 +78,17 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 
 	chunkSeriesC := make(chan chunkSeriesPromise, rr.concurrency)
 
+	iterPool := make(chan chunks.Iterator, rr.concurrency)
+	for range rr.concurrency {
+		iterPool <- nil
+	}
+
 	go func() {
 		defer close(chunkSeriesC)
+
 		for j := 0; j < len(buf) && rr.seriesSet.Next(); j++ {
 			s := rr.seriesSet.At()
-			it := s.Iterator(nil)
+			it := s.Iterator(<-iterPool)
 
 			promise := chunkSeriesPromise{
 				s: s,
@@ -90,7 +98,8 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 			chunkSeriesC <- promise
 
 			go func() {
-				chkBytes, err := collectChunks(it)
+				chkBytes, it, err := collectChunks(it)
+				iterPool <- it
 				promise.c <- chkBytesOrError{chkBytes: chkBytes, err: err}
 				close(promise.c)
 			}()
@@ -114,13 +123,13 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 
 		chkLbls.Range(func(l labels.Label) {
 			colName := schema.LabelNameToColumn(l.Name)
-			lc, _ := rr.schema.Lookup(colName)
-			rr.rowBuilder.Add(lc.ColumnIndex, parquet.ValueOf(l.Value))
+			colIdx := rr.lookupColumnID(colName)
+			rr.rowBuilder.Add(colIdx, parquet.ValueOf(l.Value))
 			// we need to address for projecting chunk columns away later so we need to correct for the offset here
-			colIdxSlice = append(colIdxSlice, lc.ColumnIndex-schema.ChunkColumnsPerDay-1)
+			colIdxSlice = append(colIdxSlice, colIdx-schema.ChunkColumnsPerDay-1)
 		})
-		rr.rowBuilder.Add(rr.labelIndexColumn, parquet.ValueOf(encoding.EncodeLabelColumnIndex(colIdxSlice)))
-		rr.rowBuilder.Add(rr.labelHashColumn, parquet.ValueOf(chkLbls.Hash()))
+		rr.rowBuilder.Add(rr.lookupColumnID(schema.LabelIndexColumn), parquet.ValueOf(encoding.EncodeLabelColumnIndex(colIdxSlice)))
+		rr.rowBuilder.Add(rr.lookupColumnID(schema.LabelHashColumn), parquet.ValueOf(chkLbls.Hash()))
 
 		if allChunksEmpty(chkBytes) {
 			continue
@@ -131,11 +140,11 @@ func (rr *indexRowReader) ReadRows(buf []parquet.Row) (int, error) {
 			}
 			switch idx {
 			case 0:
-				rr.rowBuilder.Add(rr.chunksColumn0, parquet.ValueOf(chk))
+				rr.rowBuilder.Add(rr.lookupColumnID(schema.ChunksColumn0), parquet.ValueOf(chk))
 			case 1:
-				rr.rowBuilder.Add(rr.chunksColumn1, parquet.ValueOf(chk))
+				rr.rowBuilder.Add(rr.lookupColumnID(schema.ChunksColumn1), parquet.ValueOf(chk))
 			case 2:
-				rr.rowBuilder.Add(rr.chunksColumn2, parquet.ValueOf(chk))
+				rr.rowBuilder.Add(rr.lookupColumnID(schema.ChunksColumn2), parquet.ValueOf(chk))
 			}
 		}
 

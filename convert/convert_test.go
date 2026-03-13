@@ -6,10 +6,12 @@ package convert
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"math/rand"
 	"slices"
 	"strconv"
@@ -17,8 +19,16 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
+	"github.com/leanovate/gopter"
+	"github.com/leanovate/gopter/gen"
+	"github.com/leanovate/gopter/prop"
+	"github.com/oklog/ulid/v2"
 	"github.com/parquet-go/parquet-go"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/tsdb"
+	"github.com/prometheus/prometheus/tsdb/chunks"
+	"github.com/prometheus/prometheus/tsdb/index"
 	"github.com/prometheus/prometheus/util/teststorage"
 	"github.com/stretchr/testify/require"
 	"github.com/thanos-io/objstore"
@@ -41,7 +51,7 @@ func BenchmarkConverter(b *testing.B) {
 	st := teststorage.New(b)
 	b.Cleanup(func() { require.NoError(b, st.Close()) })
 	app := st.Appender(b.Context())
-	for i := range 10_000 {
+	for i := range 100_000 {
 		for _, sc := range []string{"200", "202", "300", "404", "400", "429", "500", "503"} {
 			_, err := app.Append(0, labels.FromStrings("__name__", "foo", "idx", fmt.Sprintf("%d", i), "status_code", sc), 0, rand.Float64())
 			require.NoError(b, err)
@@ -49,15 +59,93 @@ func BenchmarkConverter(b *testing.B) {
 	}
 	require.NoError(b, app.Commit())
 
+	h := st.Head()
+	require.NoError(b, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(b, blocks, 1)
+	blk := blocks[0]
+
+	ts := time.UnixMilli(blk.Meta().MinTime).UTC()
+	day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
+
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		h := st.Head()
-		ts := time.UnixMilli(h.MinTime()).UTC()
-		day := util.NewDate(ts.Year(), ts.Month(), ts.Day())
-
-		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{&HeadBlock{Head: h}}))
+		require.NoError(b, ConvertTSDBBlock(b.Context(), bkt, day, 0, []Convertible{blk}))
 	}
+}
+
+func createReaderWithSeries(t *testing.T, seriesLabels []string, seriesCount int, blockIdx int) (blockIndexReader, []func() error) {
+	t.Helper()
+
+	st := teststorage.New(t)
+	app := st.Appender(t.Context())
+	for s := range seriesCount {
+		randLbl := []string{"r", fmt.Sprintf("%d", s)}
+
+		_, err := app.Append(0, labels.FromStrings(append(seriesLabels, randLbl...)...), 0, rand.Float64())
+		require.NoError(t, err)
+	}
+	require.NoError(t, app.Commit())
+	h := st.Head()
+
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	ir, err := blk.Index()
+	require.NoError(t, err)
+
+	apn, apv := index.AllPostingsKey()
+	p, err := ir.Postings(context.Background(), apn, apv)
+	require.NoError(t, err)
+
+	return blockIndexReader{reader: ir, postings: p, blockID: ulid.MustNewDefault(time.Now()), idx: blockIdx}, []func() error{ir.Close, st.Close}
+}
+
+func TestSortedSeriesIterator(t *testing.T) {
+	params := gopter.DefaultTestParameters()
+	params.Workers = 8
+
+	properties := gopter.NewProperties(params)
+
+	properties.Property("sortedSeriesIterator returns series sorted by __name__", prop.ForAll(
+		func(blockCount int) bool {
+			readers := make([]blockIndexReader, 0, blockCount)
+			closers := make([]func() error, 0, blockCount)
+			for bid := range blockCount {
+				reader, closersFunc := createReaderWithSeries(t, []string{"__name__", fmt.Sprintf("foobar%d", blockCount-bid)}, 10, bid)
+
+				readers = append(readers, reader)
+				closers = append(closers, closersFunc...)
+			}
+			cOpts := convertOpts{
+				sortLabels: []string{"__name__"},
+			}
+			it := sortedSeriesIterator(readers, 0, math.MaxInt64, cOpts)
+			var slbls []labels.Labels
+			for it.Next() {
+				v := it.At()
+				slbls = append(slbls, v.labels.Copy())
+			}
+			require.Len(t, slbls, blockCount*10)
+
+			sortFn := sortedSeriesFunc(cOpts)
+			for i := 1; i < len(slbls); i++ {
+				require.True(t, sortFn(blockSeries{labels: slbls[i-1]}, blockSeries{labels: slbls[i]}))
+			}
+
+			for _, c := range closers {
+				require.NoError(t, c())
+			}
+
+			return true
+		}, gen.IntRange(1, 5)))
+
+	properties.TestingRun(t)
 }
 
 func TestConverter(t *testing.T) {
@@ -97,7 +185,16 @@ func TestConverter(t *testing.T) {
 		RowGroupCount(2),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{Head: h}}, opts...); err != nil {
+
+	expectedRows := st.DB.Head().NumSeries()
+
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{blk}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 
@@ -115,6 +212,8 @@ func TestConverter(t *testing.T) {
 	if n := meta.Shards; n != 2 {
 		t.Fatalf("unexpected number of shards: %d", n)
 	}
+
+	require.Contains(t, meta.ConvertedFromBLIDs, blk.Meta().ULID)
 
 	totalRows := int64(0)
 	for i := range int(meta.Shards) {
@@ -144,8 +243,8 @@ func TestConverter(t *testing.T) {
 			t.Fatalf("unable to check that __name__ column values are increasing: %s", err)
 		}
 	}
-	if totalRows != int64(st.DB.Head().NumSeries()) {
-		t.Fatalf("too few rows: %d", totalRows)
+	if totalRows != int64(expectedRows) {
+		t.Fatalf("too few rows: %d / %d", totalRows, st.DB.Head().NumSeries())
 	}
 }
 
@@ -190,7 +289,14 @@ func TestConverterIndexWithManyLabelNames(t *testing.T) {
 		SortBy(labels.MetricName),
 		LabelPageBufferSize(units.KiB), // results in 2 pages
 	}
-	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{&HeadBlock{h}}, opts...); err != nil {
+
+	require.NoError(t, st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())))
+
+	blocks := st.Blocks()
+	require.Len(t, blocks, 1)
+	blk := blocks[0]
+
+	if err := ConvertTSDBBlock(t.Context(), bkt, d, schema.ExternalLabelsHash(0), []Convertible{blk}, opts...); err != nil {
 		t.Fatalf("unable to convert tsdb block: %s", err)
 	}
 }
@@ -319,3 +425,76 @@ func nameColumnValuesAreIncreasing(t testing.TB, pf *parquet.File) error {
 	}
 	return nil
 }
+
+type fakePostings struct {
+	seriesCount int64
+}
+
+func (f *fakePostings) Next() bool {
+	f.seriesCount--
+	return f.seriesCount > 0
+}
+
+func (f *fakePostings) At() storage.SeriesRef { return 0 }
+func (f *fakePostings) Err() error            { return nil }
+func (f *fakePostings) Seek(_ storage.SeriesRef) bool {
+	return false
+}
+
+func TestConverterStackOverflow(t *testing.T) {
+	const seriesCount = 1_000_000
+
+	reader := blockIndexReader{
+		reader:   &outOfRangeIndexReader{},
+		postings: &fakePostings{seriesCount: seriesCount},
+	}
+
+	it := &indexReaderSeries{
+		reader: reader,
+		mint:   1,
+		maxt:   math.MaxInt64,
+		sb:     labels.NewScratchBuilder(10),
+		chks:   make([]chunks.Meta, 0, 128),
+	}
+
+	for it.Next() {
+		t.Fatal("expected no series since all chunks are outside mint/maxt")
+	}
+}
+
+type outOfRangeIndexReader struct{}
+
+func (outOfRangeIndexReader) Symbols() index.StringIter { return index.NewStringListIter(nil) }
+func (outOfRangeIndexReader) SortedLabelValues(_ context.Context, _ string, _ *storage.LabelHints, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) LabelValues(_ context.Context, _ string, _ *storage.LabelHints, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) Postings(_ context.Context, _ string, _ ...string) (index.Postings, error) {
+	return index.EmptyPostings(), nil
+}
+func (outOfRangeIndexReader) PostingsForLabelMatching(_ context.Context, _ string, _ func(string) bool) index.Postings {
+	return index.EmptyPostings()
+}
+func (outOfRangeIndexReader) PostingsForAllLabelValues(_ context.Context, _ string) index.Postings {
+	return index.EmptyPostings()
+}
+func (outOfRangeIndexReader) SortedPostings(p index.Postings) index.Postings { return p }
+func (outOfRangeIndexReader) ShardedPostings(p index.Postings, _, _ uint64) index.Postings {
+	return p
+}
+func (outOfRangeIndexReader) Series(_ storage.SeriesRef, _ *labels.ScratchBuilder, chks *[]chunks.Meta, _ ...index.SeriesParam) error {
+	*chks = append((*chks)[:0], chunks.Meta{MinTime: 0, MaxTime: 0})
+	return nil
+}
+func (outOfRangeIndexReader) LabelNames(_ context.Context, _ ...*labels.Matcher) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) LabelValueFor(_ context.Context, _ storage.SeriesRef, _ string) (string, error) {
+	return "", nil
+}
+func (outOfRangeIndexReader) LabelNamesFor(_ context.Context, _ index.Postings) ([]string, error) {
+	return nil, nil
+}
+func (outOfRangeIndexReader) Close() error { return nil }

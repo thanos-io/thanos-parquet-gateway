@@ -96,20 +96,20 @@ func BuildSchemaFromLabels(lbls []string) *parquet.Schema {
 	return parquet.NewSchema("tsdb", g)
 }
 
+var defaultZstdCodec = &zstd.Codec{Level: zstd.SpeedBetterCompression, Concurrency: 1}
+
 func WithCompression(s *parquet.Schema) *parquet.Schema {
 	g := make(parquet.Group)
 
 	for _, c := range s.Columns() {
 		lc, _ := s.Lookup(c...)
-		g[lc.Path[0]] = parquet.Compressed(lc.Node, &zstd.Codec{Level: zstd.SpeedBetterCompression, Concurrency: 4})
+		g[lc.Path[0]] = parquet.Compressed(lc.Node, defaultZstdCodec)
 	}
 
 	return parquet.NewSchema("compressed", g)
 }
 
-var (
-	ChunkColumns = []string{LabelHashColumn, ChunksColumn0, ChunksColumn1, ChunksColumn2}
-)
+var ChunkColumns = []string{LabelHashColumn, ChunksColumn0, ChunksColumn1, ChunksColumn2}
 
 func ChunkProjection(s *parquet.Schema) *parquet.Schema {
 	g := make(parquet.Group)
