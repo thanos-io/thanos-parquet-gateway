@@ -55,19 +55,70 @@ func NewPlanner(notAfter time.Time, maxDays int) Planner {
 	return Planner{notAfter: notAfter, maxDays: maxDays}
 }
 
-func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream) Plan {
+func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.ParquetBlocksStream, minTimeDate string, maxTimeDate string) Plan {
+
+	var (
+		windowActive bool
+		winStartDay  time.Time
+		winEndDay    time.Time
+	)
+
+	if minTimeDate != "" || maxTimeDate != "" {
+		windowActive = true
+
+		// Parse minDate and round to start of day (00:00:00 UTC, inclusive)
+		if minTimeDate != "" {
+			t, err := time.Parse("2006-01-02", minTimeDate)
+			if err != nil {
+				// Invalid date format, disable window filtering
+				windowActive = false
+			} else {
+				winStartDay = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+			}
+		}
+
+		// Parse maxDate and round to start of next day (00:00:00 UTC, exclusive)
+		if maxTimeDate != "" {
+			t, err := time.Parse("2006-01-02", maxTimeDate)
+			if err != nil {
+				// Invalid date format, disable window filtering
+				windowActive = false
+			} else {
+				// Add 1 day to make the boundary exclusive
+				winEndDay = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, time.UTC)
+			}
+		}
+	}
 	// Make a list of days covered by TSDB blocks.
 	tsdbDates := map[util.Date][]metadata.Meta{}
 	for _, tsdb := range tsdb.Metas {
 		for _, partialDate := range util.SplitIntoDates(tsdb.MinTime, tsdb.MaxTime) {
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minTimeDate != "" && pt.Before(winStartDay) {
+					continue
+				}
+				if maxTimeDate != "" && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			tsdbDates[partialDate] = append(tsdbDates[partialDate], tsdb)
 		}
 	}
 
-	// Make a list of days covered by parquet blocks.
 	pqDates := map[util.Date]struct{}{}
 	for _, pq := range parquet.Metas {
 		for _, partialDate := range util.SplitIntoDates(pq.Mint, pq.Maxt) {
+
+			if windowActive {
+				pt := partialDate.ToTime()
+				if minTimeDate != "" && pt.Before(winStartDay) {
+					continue
+				}
+				if maxTimeDate != "" && !pt.Before(winEndDay) {
+					continue
+				}
+			}
 			pqDates[partialDate] = struct{}{}
 		}
 	}
@@ -113,7 +164,7 @@ func (p Planner) planStream(tsdb schema.TSDBBlocksStream, parquet schema.Parquet
 	return Plan{Steps: steps}
 }
 
-func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) Plan {
+func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlocksStream, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, minTimeDate string, maxTimeDate string) Plan {
 	outPlan := Plan{Steps: []Step{}}
 
 	for tsdbEH := range tsdbStreams {
@@ -122,7 +173,7 @@ func (p Planner) Plan(tsdbStreams map[schema.ExternalLabelsHash]schema.TSDBBlock
 			parquet = schema.ParquetBlocksStream{}
 		}
 
-		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet)
+		streamPlan := p.planStream(tsdbStreams[tsdbEH], parquet, minTimeDate, maxTimeDate)
 		for i := range streamPlan.Steps {
 			streamPlan.Steps[i].ExternalLabels = tsdbStreams[tsdbEH].ExternalLabels
 		}
