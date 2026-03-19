@@ -169,8 +169,8 @@ func registerServeApp(app *kingpin.Application) (*kingpin.CmdClause, func(contex
 			cfdb.ExternalLabels(labels.FromMap(opts.query.externalLabels)),
 		)
 
-		setupPromAPI(&g, log, db, opts.promAPI, opts.query)
-		setupThanosAPI(&g, log, db, opts.thanosAPI, opts.query)
+		setupPromAPI(&g, log, db, reg, opts.promAPI, opts.query)
+		setupThanosAPI(&g, log, db, reg, opts.thanosAPI, opts.query)
 		setupInternalAPI(&g, log, reg, opts.internalAPI)
 
 		return g.Run()
@@ -198,7 +198,7 @@ type queryOpts struct {
 	selectChunkPartitionMaxConcurrency int
 }
 
-func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
+func engineFromQueryOpts(opts queryOpts, logger *slog.Logger, reg prometheus.Registerer) promql.QueryEngine {
 	return engine.New(engine.Opts{
 		DisableDuplicateLabelChecks: true,
 		LogicalOptimizers: []logicalplan.Optimizer{
@@ -206,8 +206,8 @@ func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 		},
 
 		EngineOpts: promql.EngineOpts{
-			Logger:                   nil,
-			Reg:                      nil,
+			Logger:                   logger,
+			Reg:                      reg,
 			MaxSamples:               10_000_000,
 			Timeout:                  opts.engineTimeout,
 			NoStepSubqueryIntervalFn: func(int64) int64 { return time.Minute.Milliseconds() },
@@ -218,10 +218,9 @@ func engineFromQueryOpts(opts queryOpts) promql.QueryEngine {
 			EnableDelayedNameRemoval: false,
 		},
 	})
-
 }
 
-func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOpts queryOpts) {
+func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, reg prometheus.Registerer, opts apiOpts, qOpts queryOpts) {
 	server := grpc.NewServer(
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.MaxRecvMsgSize(math.MaxInt32),
@@ -234,7 +233,7 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 
 	queryServer := cfgrpc.NewQueryServer(
 		db,
-		engineFromQueryOpts(qOpts),
+		engineFromQueryOpts(qOpts, log, reg),
 		cfgrpc.ConcurrentQueryQuota(qOpts.concurrentQueryQuota),
 		cfgrpc.SelectChunkBytesQuota(qOpts.selectChunkBytesQuota),
 		cfgrpc.SelectRowCountQuota(qOpts.selectRowCountQuota),
@@ -284,8 +283,8 @@ func setupThanosAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, q
 	})
 }
 
-func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, opts apiOpts, qOpts queryOpts) {
-	handler := cfhttp.NewAPI(db, engineFromQueryOpts(qOpts),
+func setupPromAPI(g *run.Group, log *slog.Logger, db *cfdb.DB, reg prometheus.Registerer, opts apiOpts, qOpts queryOpts) {
+	handler := cfhttp.NewAPI(db, engineFromQueryOpts(qOpts, log, reg),
 		cfhttp.QueryOptions(
 			cfhttp.DefaultStep(qOpts.defaultStep),
 			cfhttp.DefaultLookback(qOpts.defaultLookback),
