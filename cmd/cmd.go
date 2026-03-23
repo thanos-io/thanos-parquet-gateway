@@ -95,8 +95,7 @@ func main() {
 }
 
 func setupPrometheusRegistry() (*prometheus.Registry, error) {
-	reg := prometheus.NewRegistry()
-	registerer := prometheus.WrapRegistererWithPrefix("cf_metrics_", reg)
+	registerer := prometheus.NewRegistry()
 
 	if err := errors.Join(
 		locate.RegisterMetrics(prometheus.WrapRegistererWithPrefix("locate_", registerer)),
@@ -108,5 +107,6 @@ func setupPrometheusRegistry() (*prometheus.Registry, error) {
 	); err != nil {
 		return nil, fmt.Errorf("unable to register metrics: %w", err)
 	}
-	return reg, nil
+
+	return registerer, nil
 }
