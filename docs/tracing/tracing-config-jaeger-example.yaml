@@ -1,0 +1,48 @@
+# Example Jaeger tracing configuration for thanos-parquet-gateway
+# This configuration uses the Thanos jaeger package (github.com/thanos-io/thanos/pkg/tracing/jaeger)
+# which provides comprehensive Jaeger integration with OpenTelemetry.
+
+type: JAEGER
+config:
+  # Service name identifies this service in traces
+  service_name: parquet-gateway
+
+  # Jaeger endpoint configuration
+  # Option 1: Use collector endpoint (HTTP/HTTPS)
+  endpoint: http://jaeger-collector:14268/api/traces
+  # Optional: username for collector authentication
+  # user: username
+  # Optional: password for collector authentication
+  # password: password
+
+  # Option 2: Use agent endpoint (UDP)
+  # Uncomment these and comment out 'endpoint' to use agent
+  # agent_host: localhost
+  # agent_port: 6831
+
+  # Sampling configuration
+  # Sampler types: const, probabilistic, ratelimiting, remote
+  sampler_type: const
+  # For const: 0 (never sample) or 1 (always sample)
+  # For probabilistic: 0.0 to 1.0 (sampling probability)
+  # For ratelimiting: number of traces per second
+  sampler_param: 1
+
+  # Optional: Remote sampling configuration
+  # sampling_server_url: http://jaeger-agent:5778/sampling
+  # sampler_refresh_interval: 1m
+  # initial_sampler_rate: 0.001
+
+  # Optional: Reporter configuration
+  # reporter_max_queue_size: 100
+  # reporter_flush_interval: 1s
+  # reporter_log_spans: false
+
+  # Optional: Additional tags (comma-separated key=value pairs)
+  # Supports environment variable substitution: ${ENV_VAR:default_value}
+  # tags: environment=production,region=${REGION:us-east-1}
+
+  # Optional: Parent-based sampler configuration
+  # sampler_parent_config:
+  #   local_parent_sampled: false
+  #   remote_parent_sampled: false
