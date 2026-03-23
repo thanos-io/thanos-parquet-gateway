@@ -336,7 +336,7 @@ func parseMatchersParamForSeries(r *http.Request) ([][]*labels.Matcher, error) {
 	if len(matchers) == 0 {
 		return nil, errors.New("no match[] parameter provided")
 	}
-	matcherSets, err := parser.ParseMetricSelectors(matchers)
+	matcherSets, err := parser.NewParser(parser.Options{}).ParseMetricSelectors(matchers)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +356,7 @@ OUTER:
 func parseMatchersParamForLabels(r *http.Request) ([][]*labels.Matcher, error) {
 	matchers := r.Form["match[]"]
 
-	matcherSets, err := parser.ParseMetricSelectors(matchers)
+	matcherSets, err := parser.NewParser(parser.Options{}).ParseMetricSelectors(matchers)
 	if err != nil {
 		return nil, err
 	}
