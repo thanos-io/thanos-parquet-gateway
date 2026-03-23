@@ -51,7 +51,9 @@ func TestSyncer(t *testing.T) {
 			},
 		}
 
-		if err := syncer.Sync(ctx, m); err != nil {
+		if err := syncer.Sync(ctx, DiscovererStreams{
+			Streams: m,
+		}); err != nil {
 			tt.Fatalf("unable to sync blocks: %s", err)
 		}
 
@@ -59,7 +61,9 @@ func TestSyncer(t *testing.T) {
 			tt.Errorf("expected: %+v, got: %+v", expect, got)
 		}
 
-		if err := syncer.Sync(ctx, map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{}); err != nil {
+		if err := syncer.Sync(ctx, DiscovererStreams{
+			Streams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
+		}); err != nil {
 			tt.Fatalf("unable to sync blocks: %s", err)
 		}
 

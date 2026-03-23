@@ -212,6 +212,49 @@ type discoveryOpts struct {
 	discoveryConcurrency int
 }
 
+func setupDeleter(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, discoverer *locate.Discoverer, retentionPeriod time.Duration, interval time.Duration) error {
+	if retentionPeriod == 0 {
+		return nil
+	}
+	deleteMarker := locate.NewRetentionDurationMarker(discoverer, bkt, retentionPeriod, log)
+	deleter := locate.NewRetentionDurationDeleter(bkt)
+
+	ctx, cancel := context.WithCancel(ctx)
+	g.Add(func() error {
+		return runutil.Repeat(interval, ctx.Done(), func() error {
+			log.Debug("Running deleter")
+
+			iterCtx, iterCancel := context.WithTimeout(ctx, interval)
+			defer iterCancel()
+			if err := deleter.DeleteMarkedStreams(iterCtx); err != nil {
+				log.Warn("Unable to delete marked streams", slog.Any("err", err))
+			}
+			return nil
+		})
+	}, func(error) {
+		log.Info("Stopping deleter")
+		cancel()
+	})
+
+	g.Add(func() error {
+		return runutil.Repeat(interval, ctx.Done(), func() error {
+			log.Debug("Running deletion marking")
+
+			iterCtx, iterCancel := context.WithTimeout(ctx, interval)
+			defer iterCancel()
+			if err := deleteMarker.MarkExpiredStreams(iterCtx); err != nil {
+				log.Warn("Unable to mark expired streams", slog.Any("err", err))
+			}
+			return nil
+		})
+	}, func(error) {
+		log.Info("Stopping deletion marking")
+		cancel()
+	})
+
+	return nil
+}
+
 func setupDiscovery(ctx context.Context, g *run.Group, log *slog.Logger, bkt objstore.Bucket, opts discoveryOpts) (*locate.Discoverer, error) {
 	discoverer := locate.NewDiscoverer(bkt, locate.MetaConcurrency(opts.discoveryConcurrency), locate.Logger(log))
 

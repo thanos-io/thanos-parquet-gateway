@@ -149,6 +149,50 @@ func (x *Columns) GetColumns() []string {
 	return nil
 }
 
+type DeletionMark struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Reason        string                 `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeletionMark) Reset() {
+	*x = DeletionMark{}
+	mi := &file_meta_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeletionMark) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeletionMark) ProtoMessage() {}
+
+func (x *DeletionMark) ProtoReflect() protoreflect.Message {
+	mi := &file_meta_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeletionMark.ProtoReflect.Descriptor instead.
+func (*DeletionMark) Descriptor() ([]byte, []int) {
+	return file_meta_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DeletionMark) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 var File_meta_proto protoreflect.FileDescriptor
 
 const file_meta_proto_rawDesc = "" +
@@ -166,7 +210,9 @@ const file_meta_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12#\n" +
 	"\x05value\x18\x02 \x01(\v2\r.meta.ColumnsR\x05value:\x028\x01\"#\n" +
 	"\aColumns\x12\x18\n" +
-	"\acolumns\x18\x01 \x03(\tR\acolumnsB:Z8github.com/thanos-io/thanos-parquet-gateway/proto/metapbb\x06proto3"
+	"\acolumns\x18\x01 \x03(\tR\acolumns\"&\n" +
+	"\fDeletionMark\x12\x16\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reasonB:Z8github.com/thanos-io/thanos-parquet-gateway/proto/metapbb\x06proto3"
 
 var (
 	file_meta_proto_rawDescOnce sync.Once
@@ -180,14 +226,15 @@ func file_meta_proto_rawDescGZIP() []byte {
 	return file_meta_proto_rawDescData
 }
 
-var file_meta_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_meta_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_meta_proto_goTypes = []any{
-	(*Metadata)(nil), // 0: meta.Metadata
-	(*Columns)(nil),  // 1: meta.Columns
-	nil,              // 2: meta.Metadata.ColumnsForNameEntry
+	(*Metadata)(nil),     // 0: meta.Metadata
+	(*Columns)(nil),      // 1: meta.Columns
+	(*DeletionMark)(nil), // 2: meta.DeletionMark
+	nil,                  // 3: meta.Metadata.ColumnsForNameEntry
 }
 var file_meta_proto_depIdxs = []int32{
-	2, // 0: meta.Metadata.columnsForName:type_name -> meta.Metadata.ColumnsForNameEntry
+	3, // 0: meta.Metadata.columnsForName:type_name -> meta.Metadata.ColumnsForNameEntry
 	1, // 1: meta.Metadata.ColumnsForNameEntry.value:type_name -> meta.Columns
 	2, // [2:2] is the sub-list for method output_type
 	2, // [2:2] is the sub-list for method input_type
@@ -207,7 +254,7 @@ func file_meta_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_meta_proto_rawDesc), len(file_meta_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

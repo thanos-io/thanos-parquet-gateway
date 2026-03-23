@@ -112,7 +112,7 @@ func (s *Syncer) Blocks() []*db.Block {
 	return s.filterBlocks(s.cached)
 }
 
-func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream) error {
+func (s *Syncer) Sync(ctx context.Context, parquetStreams DiscovererStreams) error {
 	type blockOrError struct {
 		blk       *db.Block
 		extLabels schema.ExternalLabels
@@ -133,7 +133,7 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 		go func() {
 			defer close(workerC)
 
-			for streamHash, stream := range parquetStreams {
+			for streamHash, stream := range parquetStreams.Streams {
 				if _, ok := s.blocks[streamHash]; !ok {
 					s.blocks[streamHash] = make(map[util.Date]*db.Block)
 				}
@@ -142,8 +142,9 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 						continue
 					}
 					workerC <- metaHashTuple{
-						m:         m,
-						extLabels: stream.ExternalLabels,
+						m:          m,
+						extLabels:  stream.ExternalLabels,
+						streamHash: streamHash,
 					}
 				}
 			}
@@ -153,9 +154,7 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 		defer wg.Wait()
 
 		for range s.concurrency {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for mh := range workerC {
 					blk, err := newBlockForMeta(ctx, s.bkt, mh.extLabels, mh.m, s.blockOpts...)
 					if err != nil {
@@ -164,7 +163,7 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 						blkC <- blockOrError{blk: blk, extLabels: mh.extLabels}
 					}
 				}
-			}()
+			})
 		}
 	}()
 
@@ -184,7 +183,7 @@ func (s *Syncer) Sync(ctx context.Context, parquetStreams map[schema.ExternalLab
 
 	var numBlocks int
 	for stream := range s.blocks {
-		if _, ok := parquetStreams[stream]; !ok {
+		if _, ok := parquetStreams.Streams[stream]; !ok {
 			delete(s.blocks, stream)
 		}
 	}
