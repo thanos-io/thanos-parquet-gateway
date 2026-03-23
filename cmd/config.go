@@ -175,6 +175,9 @@ func setupInternalAPI(g *run.Group, log *slog.Logger, reg *prometheus.Registry, 
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	// pprof.Cmdline is intentionally not exposed, as the Thanos Parquet
+	// Gateway accepts inline yaml configuration blobs that may contain
+	// sensitive configuration data.
 	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 
 	mux.HandleFunc("/-/healthy", func(w http.ResponseWriter, _ *http.Request) {
