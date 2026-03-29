@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"slices"
@@ -257,6 +258,12 @@ func (q ShardQuerier) selectCore(ctx context.Context, spanName string, sorted bo
 			continue
 		}
 		h := seriesChunks[i].LsetHash
+
+		if v := seriesChunks[i].Lset.Get(schema.SeriesHashLabel); v != "" {
+			if len(v) == 8 {
+				h = binary.LittleEndian.Uint64([]byte(v))
+			}
+		}
 		if _, ok := seen[h]; ok {
 			// We have seen this series before, skip it for now; we could be smarter and select
 			// chunks appropriately so that we fill in what might be missing but for now skipping is fine
