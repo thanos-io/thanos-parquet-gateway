@@ -623,7 +623,140 @@ func TestPlanner(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(tt *testing.T) {
-			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams)
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams, "", "")
+
+			if diff := cmp.Diff(tc.expectedPlan, plan,
+				cmpopts.IgnoreUnexported(),
+				cmpopts.EquateComparable(util.Date{}),
+				cmpopts.IgnoreFields(tsdb.BlockMeta{}, "MinTime", "MaxTime"),
+			); diff != "" {
+				tt.Errorf("plan mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestPlannerWithTimeWindow(t *testing.T) {
+	var (
+		defaultExternalLabels = schema.ExternalLabels{"stream": "eu-west-1"}
+		defaultHash           = defaultExternalLabels.Hash()
+	)
+	mockBlocks := func(ulids ...string) []metadata.Meta {
+		metas := make([]metadata.Meta, 0, len(ulids))
+		for _, v := range ulids {
+			metas = append(metas, metadata.Meta{
+				BlockMeta: tsdb.BlockMeta{ULID: ulid.MustParse(v)},
+			})
+		}
+		return metas
+	}
+	now := time.Now().UTC()
+	now = now.Truncate(24 * time.Hour)
+
+	for _, tc := range []struct {
+		name string
+
+		notAfter       time.Time
+		maxDays        int
+		minDate        string
+		maxDate        string
+		tsdbStreams    map[schema.ExternalLabelsHash]schema.TSDBBlocksStream
+		parquetStreams map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
+
+		expectedPlan Plan
+	}{
+		{
+			name:     "zero time offsets means no filtering - all dates included",
+			notAfter: time.UnixMilli(math.MaxInt64),
+			maxDays:  10,
+			minDate:  "",
+			maxDate:  "",
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+								MinTime: time.Date(2026, time.February, 20, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2026, time.February, 21, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+								MinTime: time.Date(2026, time.February, 15, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2026, time.February, 16, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+					},
+				},
+			},
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:           util.NewDate(2026, time.February, 20),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+						ExternalLabels: defaultExternalLabels,
+					},
+					{
+						Date:           util.NewDate(2026, time.February, 15),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+						ExternalLabels: defaultExternalLabels,
+					},
+				},
+			},
+		},
+
+		{
+			name:     "date window filters only blocks within rang",
+			notAfter: time.UnixMilli(math.MaxInt64),
+			maxDays:  10,
+			minDate:  "2026-02-17",
+			maxDate:  "2026-02-19",
+			tsdbStreams: map[schema.ExternalLabelsHash]schema.TSDBBlocksStream{
+				defaultHash: {
+					StreamDescriptor: schema.StreamDescriptor{ExternalLabels: defaultExternalLabels},
+					Metas: []metadata.Meta{
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXA"),
+								MinTime: time.Date(2026, time.February, 20, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2026, time.February, 21, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXB"),
+								MinTime: time.Date(2026, time.February, 15, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2026, time.February, 16, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+						{
+							BlockMeta: tsdb.BlockMeta{
+								ULID:    ulid.MustParse("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+								MinTime: time.Date(2026, time.February, 18, 0, 0, 0, 0, time.UTC).UnixMilli(),
+								MaxTime: time.Date(2026, time.February, 19, 0, 0, 0, 0, time.UTC).UnixMilli(),
+							},
+						},
+					},
+				},
+			},
+			parquetStreams: map[schema.ExternalLabelsHash]schema.ParquetBlocksStream{},
+			expectedPlan: Plan{
+				Steps: []Step{
+					{
+						Date:           util.NewDate(2026, time.February, 18),
+						Sources:        mockBlocks("01JT0DPYGA1HPW5RBZ1KBXCNXC"),
+						ExternalLabels: defaultExternalLabels,
+					},
+				},
+			},
+		},
+	} {
+		t.Run(tc.name, func(tt *testing.T) {
+			plan := NewPlanner(tc.notAfter, tc.maxDays).Plan(tc.tsdbStreams, tc.parquetStreams, tc.minDate, tc.maxDate)
 
 			if diff := cmp.Diff(tc.expectedPlan, plan,
 				cmpopts.IgnoreUnexported(),
