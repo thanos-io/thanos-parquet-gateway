@@ -435,6 +435,30 @@ func TestInstantQuery(t *testing.T) {
 		},
 		{
 			name: "",
+			load: `load 10s
+			    data{test="ten",point="a", testdb="db1"} 2
+				data{test="ten",point="b", testdb="db1"} 8
+				data{test="ten",point="c", testdb="db1"} 1e+100
+				data{test="ten",point="d", testdb="db1"} -1e100
+				data{test="pos_inf",group="1",point="a", testdb="db1"} Inf
+				data{test="pos_inf",group="1",point="b", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="a", testdb="db1"} 2
+				data{test="pos_inf",group="2",point="b", testdb="db1"} Inf
+				data{test="neg_inf",group="1",point="a", testdb="db1"} -Inf
+				data{test="neg_inf",group="1",point="b", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="a", testdb="db1"} 2
+				data{test="neg_inf",group="2",point="b", testdb="db1"} -Inf
+				data{test="inf_inf",point="a", testdb="db1"} Inf
+				data{test="inf_inf",point="b", testdb="db1"} -Inf
+				data{test="nan",group="1",point="a", testdb="db1"} NaN
+				data{test="nan",group="1",point="b", testdb="db1"} 2
+				data{test="nan",group="2",point="a", testdb="db1"} 2
+				data{test="nan",group="2",point="b", testdb="db1"} NaN`,
+			queryTime: time.Unix(60, 0),
+			queries:   []string{`sum(data{test=~"ten|pos_inf|neg_inf|inf_inf|nan"})`},
+		},
+		{
+			name: "",
 			load: `load 5m
 				http_requests{job="api-server", instance="0", group="production", testdb="db1"} 0+10x10
 				http_requests{job="api-server", instance="1", group="production", testdb="db1"} 0+20x10

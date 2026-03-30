@@ -293,6 +293,10 @@ type regexConstraint struct {
 	cache map[parquet.Value]bool
 
 	r *labels.FastRegexMatcher
+
+	comp func(l, r parquet.Value) int
+
+	firstMatcherPQ, lastMatcherPQ parquet.Value
 }
 
 func (rc *regexConstraint) String() string {
@@ -329,10 +333,12 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 	if err != nil {
 		return nil, fmt.Errorf("unable to read column index: %w", err)
 	}
+
 	var (
 		symbols = new(symbolTable)
 		res     = make([]rowRange, 0)
 	)
+
 	for i := range cidx.NumPages() {
 		// If page does not intersect from, to; we can immediately discard it
 		pfrom := oidx.FirstRowIndex(i)
@@ -354,7 +360,26 @@ func (rc *regexConstraint) filter(ctx context.Context, rg parquet.RowGroup, _ bo
 			}
 			continue
 		}
-		// TODO: use setmatches / prefix for statistics
+
+		// TODO: use prefix for statistics.
+		if !rc.firstMatcherPQ.IsNull() && !rc.lastMatcherPQ.IsNull() {
+			var outside = true
+
+			minv, maxv := cidx.MinValue(i), cidx.MaxValue(i)
+			if !minv.IsNull() && !maxv.IsNull() {
+				if rc.comp(rc.firstMatcherPQ, minv) >= 0 {
+					outside = false
+				}
+
+				if rc.comp(rc.lastMatcherPQ, maxv) <= 0 {
+					outside = false
+				}
+
+				if outside {
+					continue
+				}
+			}
+		}
 
 		// We cannot discard the page through statistics but we might need to read it to see if it has the value
 		if err := pgs.SeekToRow(pfrom); err != nil {
@@ -406,6 +431,15 @@ func (rc *regexConstraint) init(s *parquet.Schema) error {
 		return fmt.Errorf("schema: cannot search value of kind %s in column of kind %s", stringKind, c.Node.Type().Kind())
 	}
 	rc.cache = make(map[parquet.Value]bool)
+	rc.comp = c.Node.Type().Compare
+
+	setMatches := rc.r.SetMatches()
+	sort.Strings(setMatches)
+
+	if len(setMatches) > 0 {
+		rc.firstMatcherPQ, rc.lastMatcherPQ = parquet.ValueOf(setMatches[0]), parquet.ValueOf(setMatches[len(setMatches)-1])
+	}
+
 	return nil
 }
 
