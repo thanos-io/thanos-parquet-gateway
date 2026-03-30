@@ -5,7 +5,7 @@ pkgs.mkShell {
   name = "env";
   hardeningDisable = [ "fortify" ];
   buildInputs = with pkgs; [
-    go
+    go_1_25
     gotools
     delve
     revive
@@ -19,4 +19,5 @@ pkgs.mkShell {
     export GOPATH="$(go env GOPATH)"
   '';
 }
+
 
