@@ -17,7 +17,7 @@ require (
 	github.com/parquet-go/parquet-go v0.25.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/common v0.67.5
-	github.com/prometheus/prometheus v0.309.1
+	github.com/prometheus/prometheus v0.310.0
 	github.com/sourcegraph/conc v0.3.0
 	github.com/thanos-io/objstore v0.0.0-20250804093838-71d60dfee488
 	github.com/thanos-io/promql-engine v0.0.0-20260316172147-bd201f966271
