@@ -6,6 +6,7 @@ package schema
 
 import (
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
 	"sort"
@@ -64,6 +65,27 @@ func (h ExternalLabels) Hash() ExternalLabelsHash {
 	}
 
 	return ExternalLabelsHash(xxh.Sum64())
+}
+
+// Without returns a copy of the label set with the given keys removed.
+// Used to drop replica labels so the path hash is stable across compacted (no replica) and uncompacted (replica in meta) blocks.
+func (h ExternalLabels) Without(exclude []string) ExternalLabels {
+	if len(exclude) == 0 {
+		out := make(ExternalLabels, len(h))
+		maps.Copy(out, h)
+		return out
+	}
+	excl := make(map[string]struct{}, len(exclude))
+	for _, k := range exclude {
+		excl[k] = struct{}{}
+	}
+	out := make(ExternalLabels, len(h))
+	for k, v := range h {
+		if _, skip := excl[k]; !skip {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // StreamDescriptor describes a Parquet block stream. Typical structure:

@@ -423,6 +423,7 @@ type tsdbDiscoveryConfig struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	replicaLabels         []string
 	l                     *slog.Logger
 }
 
@@ -452,6 +453,14 @@ func TSDBMinBlockAge(d time.Duration) TSDBDiscoveryOption {
 	}
 }
 
+// TSDBReplicaLabels sets label names to exclude from the stream hash (e.g. receive_node_hostname).
+// Blocks that differ only by these labels are merged into one stream so compacted and uncompacted blocks write to the same path.
+func TSDBReplicaLabels(labels ...string) TSDBDiscoveryOption {
+	return func(cfg *tsdbDiscoveryConfig) {
+		cfg.replicaLabels = labels
+	}
+}
+
 type TSDBDiscoverer struct {
 	bkt objstore.Bucket
 
@@ -460,6 +469,7 @@ type TSDBDiscoverer struct {
 
 	externalLabelMatchers []*labels.Matcher
 	minBlockAge           time.Duration
+	replicaLabels         []string
 
 	concurrency int
 	l           *slog.Logger
@@ -479,6 +489,7 @@ func NewTSDBDiscoverer(bkt objstore.Bucket, opts ...TSDBDiscoveryOption) *TSDBDi
 		concurrency:           cfg.concurrency,
 		externalLabelMatchers: cfg.externalLabelMatchers,
 		minBlockAge:           cfg.minBlockAge,
+		replicaLabels:         cfg.replicaLabels,
 		l:                     cfg.l,
 	}
 }
@@ -494,13 +505,14 @@ func (s *TSDBDiscoverer) Streams() map[schema.ExternalLabelsHash]schema.TSDBBloc
 
 	for _, m := range s.metas {
 		extLbls := schema.ExternalLabels(m.Thanos.Labels)
-		eh := extLbls.Hash()
+		streamLbls := extLbls.Without(s.replicaLabels)
+		eh := streamLbls.Hash()
 
 		bs, ok := out[eh]
 		if !ok {
 			bs = schema.TSDBBlocksStream{
 				StreamDescriptor: schema.StreamDescriptor{
-					ExternalLabels: m.Thanos.Labels,
+					ExternalLabels: streamLbls,
 				},
 				DiscoveredDays: make(map[util.Date]struct{}),
 			}
