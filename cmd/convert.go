@@ -41,6 +41,11 @@ type convertOpts struct {
 	tsdbDiscover    tsdbDiscoveryOpts
 	conversion      conversionOpts
 	internalAPI     apiOpts
+	retentionOpts   retentionOpts
+}
+
+type retentionOpts struct {
+	retentionPeriodDays uint64
 }
 
 type conversionOpts struct {
@@ -70,6 +75,11 @@ func (opts *convertOpts) registerFlags(cmd *kingpin.CmdClause) {
 	opts.parquetDiscover.registerConvertParquetFlags(cmd)
 	opts.tsdbDiscover.registerConvertTSDBFlags(cmd)
 	opts.internalAPI.registerConvertFlags(cmd)
+	opts.retentionOpts.registerFlags(cmd)
+}
+
+func (opts *retentionOpts) registerFlags(cmd *kingpin.CmdClause) {
+	cmd.Flag("convert.retention-days", "number of days after which the converted parquet files will be marked for deletion. Zero disables this functionality.").Default("0").Uint64Var(&opts.retentionPeriodDays)
 }
 
 func (opts *conversionOpts) registerFlags(cmd *kingpin.CmdClause) {
@@ -148,6 +158,16 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 			return fmt.Errorf("unable to setup parquet discovery: %s", err)
 		}
 
+		const maxRetentionDays = 36500 // Otherwise the multiplication overflows.
+
+		if opts.retentionOpts.retentionPeriodDays > maxRetentionDays {
+			return fmt.Errorf("--convert.retention-days must not exceed %d", maxRetentionDays)
+		}
+
+		if err := setupDeleter(ctx, &g, log, parquetBkt, parquetDiscoverer, time.Duration(opts.retentionOpts.retentionPeriodDays)*24*time.Hour, opts.parquetDiscover.discoveryInterval); err != nil {
+			return fmt.Errorf("unable to setup deleter: %s", err)
+		}
+
 		planner := convert.NewPlanner(time.Now().Add(-opts.conversion.gracePeriod), opts.conversion.maxDays)
 		blkDir := filepath.Join(opts.conversion.tempDir, ".blocks")
 		bufferDir := filepath.Join(opts.conversion.tempDir, ".buffers")
@@ -169,7 +189,7 @@ func registerConvertApp(app *kingpin.Application) (*kingpin.CmdClause, func(cont
 				Help: "How many TODO steps were reported by the planner the last time",
 			})
 			return runutil.Repeat(opts.conversion.progressInterval, ctx.Done(), func() error {
-				plan := planner.Plan(tsdbDiscoverer.Streams(), parquetDiscoverer.Streams())
+				plan := planner.Plan(tsdbDiscoverer.Streams(), parquetDiscoverer.Streams().Streams)
 				todoConvert.Set(float64(len(plan.Steps)))
 				return nil
 			})
@@ -230,11 +250,11 @@ func advanceConversion(
 	tsdbMetas := tsdbDiscoverer.Streams()
 
 	streamHashMap := make(map[schema.ExternalLabelsHash]schema.ExternalLabels)
-	for _, discoveredStream := range parquetStreams {
+	for _, discoveredStream := range parquetStreams.Streams {
 		streamHashMap[discoveredStream.ExternalLabels.Hash()] = discoveredStream.ExternalLabels
 	}
 
-	plan := planner.Plan(tsdbMetas, parquetStreams)
+	plan := planner.Plan(tsdbMetas, parquetStreams.Streams)
 	if len(plan.Steps) == 0 {
 		log.Info("Nothing to do")
 		return nil

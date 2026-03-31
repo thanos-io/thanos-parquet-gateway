@@ -16,3 +16,7 @@ message Metadata {
 message Columns {
   repeated string columns = 1;
 }
+
+message DeletionMark {
+  string reason = 1;
+}

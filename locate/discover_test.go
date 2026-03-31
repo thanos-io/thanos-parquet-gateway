@@ -52,9 +52,9 @@ func TestDiscoverer(t *testing.T) {
 		require.NoError(t, discoverer.Discover(ctx))
 
 		metas := discoverer.Streams()
-		require.Len(t, metas, 1)
+		require.Len(t, metas.Streams, 1)
 
-		stream := metas[extLabels.Hash()]
+		stream := metas.Streams[extLabels.Hash()]
 
 		if expect, got := []util.Date{util.NewDate(1970, time.January, 1)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
 			t.Errorf("expected: %+v, got: %+v", expect, got)
@@ -68,9 +68,9 @@ func TestDiscoverer(t *testing.T) {
 		}
 
 		streams := discoverer.Streams()
-		require.Len(t, streams, 1)
+		require.Len(t, streams.Streams, 1)
 
-		stream = streams[extLabels.Hash()]
+		stream = streams.Streams[extLabels.Hash()]
 		if expect, got := []util.Date{util.NewDate(1970, time.January, 1), util.NewDate(1970, time.January, 2)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
 			t.Errorf("expected: %+v, got: %+v", expect, got)
 		}
@@ -78,14 +78,39 @@ func TestDiscoverer(t *testing.T) {
 		require.Equal(t, extLabels, stream.ExternalLabels)
 	})
 
+	t.Run("does not detect blocks that have a deletion marker", func(t *testing.T) {
+		require.NoError(t, bkt.Upload(t.Context(), path.Join(extLabels.Hash().String(), "1970-01-01", DeletionMarkerName), bytes.NewReader([]byte("foo"))))
+		require.NoError(t, discoverer.Discover(ctx))
+
+		metas := discoverer.Streams()
+		require.Len(t, metas.Streams, 1)
+
+		stream := metas.Streams[extLabels.Hash()]
+
+		if expect, got := []util.Date{util.NewDate(1970, time.January, 2)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
+			t.Errorf("expected: %+v, got: %+v", expect, got)
+		}
+
+		require.NoError(t, bkt.Delete(t.Context(), path.Join(extLabels.Hash().String(), "1970-01-01", DeletionMarkerName)))
+		require.NoError(t, discoverer.Discover(ctx))
+
+		metas = discoverer.Streams()
+		require.Len(t, metas.Streams, 1)
+		stream = metas.Streams[extLabels.Hash()]
+
+		if expect, got := []util.Date{util.NewDate(1970, time.January, 1), util.NewDate(1970, time.January, 2)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
+			t.Errorf("expected: %+v, got: %+v", expect, got)
+		}
+	})
+
 	t.Run("does not detect blocks with no meta.pb", func(t *testing.T) {
 		require.NoError(t, bkt.Delete(ctx, path.Join(extLabels.Hash().String(), "1970-01-01", "meta.pb")))
 		require.NoError(t, discoverer.Discover(ctx))
 
 		metas := discoverer.Streams()
-		require.Len(t, metas, 1)
+		require.Len(t, metas.Streams, 1)
 
-		stream := metas[extLabels.Hash()]
+		stream := metas.Streams[extLabels.Hash()]
 
 		if expect, got := []util.Date{util.NewDate(1970, time.January, 2)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
 			t.Errorf("expected: %+v, got: %+v", expect, got)
@@ -117,7 +142,7 @@ func TestDiscoverer(t *testing.T) {
 
 		streams := discoverer.Streams()
 
-		stream, ok := streams[0]
+		stream, ok := streams.Streams[0]
 		require.True(t, ok)
 
 		if expect, got := []util.Date{util.NewDate(1970, time.January, 2)}, slices.SortedFunc(maps.Keys(stream.DiscoveredDays), func(a, b util.Date) int { return int(a.ToTime().Sub(b.ToTime())) }); !slices.Equal(got, expect) {
@@ -136,14 +161,14 @@ func TestDiscoverer(t *testing.T) {
 
 		streams := discoverer.Streams()
 
-		require.Contains(t, streams, nonZeroLbls.Hash())
+		require.Contains(t, streams.Streams, nonZeroLbls.Hash())
 		require.NoError(t, bkt.Delete(ctx, path.Join(nonZeroLbls.Hash().String(), "stream.pb")))
 
 		require.NoError(t, discoverer.Discover(ctx))
 
 		streams = discoverer.Streams()
-		require.Len(t, streams, 1)
-		require.NotContains(t, streams, nonZeroLbls.Hash())
+		require.Len(t, streams.Streams, 1)
+		require.NotContains(t, streams.Streams, nonZeroLbls.Hash())
 	})
 }
 

@@ -204,10 +204,10 @@ func TestConverter(t *testing.T) {
 	}
 	streams := discoverer.Streams()
 
-	if n := len(streams); n != 1 {
+	if n := len(streams.Streams); n != 1 {
 		t.Fatalf("unexpected number of metas: %d", n)
 	}
-	meta := streams[slices.Collect(maps.Keys(streams))[0]].Metas[0]
+	meta := streams.Streams[slices.Collect(maps.Keys(streams.Streams))[0]].Metas[0]
 
 	if n := meta.Shards; n != 2 {
 		t.Fatalf("unexpected number of shards: %d", n)

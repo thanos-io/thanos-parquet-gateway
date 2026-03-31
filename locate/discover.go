@@ -54,6 +54,10 @@ func Logger(l *slog.Logger) DiscoveryOption {
 	}
 }
 
+type DiscovererFilter interface {
+	ShouldUnload([]string) bool
+}
+
 type Discoverer struct {
 	bkt objstore.Bucket
 
@@ -63,6 +67,16 @@ type Discoverer struct {
 	concurrency int
 
 	l *slog.Logger
+
+	filters []DiscovererFilter
+
+	lastSync time.Time
+}
+
+type NoMetaFilter struct{}
+
+func (n *NoMetaFilter) ShouldUnload(dateFiles []string) bool {
+	return !slices.Contains(dateFiles, schema.MetaFile)
 }
 
 func NewDiscoverer(bkt objstore.Bucket, opts ...DiscoveryOption) *Discoverer {
@@ -78,12 +92,23 @@ func NewDiscoverer(bkt objstore.Bucket, opts ...DiscoveryOption) *Discoverer {
 		blocks:      make(map[schema.ExternalLabelsHash]schema.ParquetBlocksStream),
 		concurrency: cfg.concurrency,
 		l:           cfg.l,
+		filters: []DiscovererFilter{
+			&DeletionMarkerFilter{},
+			&NoMetaFilter{},
+		},
 	}
 }
 
-func (s *Discoverer) Streams() map[schema.ExternalLabelsHash]schema.ParquetBlocksStream {
+type DiscovererStreams struct {
+	Streams  map[schema.ExternalLabelsHash]schema.ParquetBlocksStream
+	LastSync time.Time
+}
+
+func (s *Discoverer) Streams() DiscovererStreams {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	r := DiscovererStreams{}
 
 	res := make(map[schema.ExternalLabelsHash]schema.ParquetBlocksStream, len(s.blocks))
 
@@ -91,7 +116,10 @@ func (s *Discoverer) Streams() map[schema.ExternalLabelsHash]schema.ParquetBlock
 		res[k] = s.blocks[k]
 	}
 
-	return res
+	r.Streams = res
+	r.LastSync = s.lastSync
+
+	return r
 }
 
 func (s *Discoverer) Discover(ctx context.Context) error {
@@ -109,7 +137,12 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 		if eh, ok := schema.SplitStreamPath(n); ok {
 			fbs, ok := futureBlocks[eh]
 			if !ok {
-				fbs = futureBlocksStream{}
+				fbs = futureBlocksStream{
+					ParquetBlocksStream: schema.ParquetBlocksStream{
+						DiscoveredDays: make(map[util.Date]struct{}),
+					},
+					filesByDate: make(map[util.Date][]string),
+				}
 			}
 
 			if fbs.streamFile != "" {
@@ -124,19 +157,12 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 		if date, file, eh, ok := schema.SplitBlockPath(n); ok {
 			fbs, ok := futureBlocks[eh]
 			if !ok {
-				fbs = futureBlocksStream{}
-			}
-
-			if fbs.DiscoveredDays == nil {
-				fbs.DiscoveredDays = make(map[util.Date]struct{})
-			}
-
-			if file == schema.MetaFile {
-				fbs.DiscoveredDays[date] = struct{}{}
-			}
-
-			if fbs.filesByDate == nil {
-				fbs.filesByDate = make(map[util.Date][]string)
+				fbs = futureBlocksStream{
+					ParquetBlocksStream: schema.ParquetBlocksStream{
+						DiscoveredDays: make(map[util.Date]struct{}),
+					},
+					filesByDate: make(map[util.Date][]string),
+				}
 			}
 
 			fbs.filesByDate[date] = append(fbs.filesByDate[date], file)
@@ -198,12 +224,25 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 
 	for discoveredHash := range futureBlocks {
 		for blockDate, dateFiles := range futureBlocks[discoveredHash].filesByDate {
-			if !slices.Contains(dateFiles, schema.MetaFile) {
+			for _, f := range s.filters {
+				if !f.ShouldUnload(dateFiles) {
+					continue
+				}
+
 				delete(futureBlocks[discoveredHash].filesByDate, blockDate)
-			} else {
-				futureBlocks[discoveredHash].DiscoveredDays[blockDate] = struct{}{}
+				break
 			}
 		}
+	}
+
+	for discoveredHash, fb := range futureBlocks {
+		for blockDate, fn := range fb.filesByDate {
+			if !slices.Contains(fn, schema.MetaFile) {
+				continue
+			}
+			fb.DiscoveredDays[blockDate] = struct{}{}
+		}
+		futureBlocks[discoveredHash] = fb
 	}
 
 	downloadedMetas := make(map[schema.ExternalLabelsHash][]schema.Meta, len(futureBlocks))
@@ -260,6 +299,7 @@ func (s *Discoverer) Discover(ctx context.Context) error {
 		syncMaxTime.WithLabelValues(whatDiscoverer).Set(float64(maxt))
 	}
 	syncLastSuccessfulTime.WithLabelValues(whatDiscoverer).SetToCurrentTime()
+	s.lastSync = time.Now()
 
 	return nil
 }
@@ -525,9 +565,7 @@ func (s *TSDBDiscoverer) Discover(ctx context.Context) error {
 		defer wg.Wait()
 
 		for range s.concurrency {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				for k := range workerC {
 					meta, err := s.readMetaFile(ctx, k)
 					if err != nil {
@@ -536,7 +574,7 @@ func (s *TSDBDiscoverer) Discover(ctx context.Context) error {
 						metaC <- metaOrError{m: meta}
 					}
 				}
-			}()
+			})
 		}
 	}()
 
