@@ -381,10 +381,20 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 		return status.Error(codes.Internal, err.Error())
 	}
 
+	var projectionLabels []string
+	var projectionInclude bool
+
+	if request.QueryHints != nil {
+		projectionLabels = request.QueryHints.ProjectionLabels
+		projectionInclude = request.QueryHints.ProjectionInclude
+	}
+
 	hints := &storage.SelectHints{
-		Start: request.MinTime,
-		End:   request.MaxTime,
-		Limit: int(request.Limit),
+		Start:             request.MinTime,
+		End:               request.MaxTime,
+		Limit:             int(request.Limit),
+		ProjectionLabels:  projectionLabels,
+		ProjectionInclude: projectionInclude,
 	}
 	if request.SkipChunks {
 		hints.Func = "series"
