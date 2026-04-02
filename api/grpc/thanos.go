@@ -277,7 +277,7 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			return err
 		}
 	}
-	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
+	seriesCount, floatSampleCount, histogramSampleCount := util.ComputeResultMetrics(res.Value)
 	switch results := res.Value.(type) {
 	case promql.Vector:
 		for _, result := range results {
@@ -299,7 +299,9 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	}
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
-		attribute.Int64("result.samples", sampleCount),
+		attribute.Int64("result.total_samples", floatSampleCount+histogramSampleCount),
+		attribute.Int64("result.float_samples", floatSampleCount),
+		attribute.Int64("result.histogram_samples", histogramSampleCount),
 	)
 	if stats := qry.Stats(); stats != nil {
 		if err := srv.Send(querypb.NewQueryStatsResponse(toQueryStats(stats))); err != nil {
@@ -351,8 +353,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			return err
 		}
 	}
-	// TODO native histogram stats in traces, with separate counts for float samples, histogram samples and total
-	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
+	seriesCount, floatSampleCount, histogramSampleCount := util.ComputeResultMetrics(res.Value)
 	switch results := res.Value.(type) {
 	case promql.Matrix:
 		for _, result := range results {
@@ -386,7 +387,9 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	}
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
-		attribute.Int64("result.samples", sampleCount),
+		attribute.Int64("result.total_samples", floatSampleCount+histogramSampleCount),
+		attribute.Int64("result.float_samples", floatSampleCount),
+		attribute.Int64("result.histogram_samples", histogramSampleCount),
 	)
 
 	if stats := qry.Stats(); stats != nil {

@@ -478,10 +478,12 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Add result metrics to span
-	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
+	seriesCount, floatSampleCount, histogramSampleCount := util.ComputeResultMetrics(res.Value)
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
-		attribute.Int64("result.samples", sampleCount),
+		attribute.Int64("result.total_samples", floatSampleCount+histogramSampleCount),
+		attribute.Int64("result.float_samples", floatSampleCount),
+		attribute.Int64("result.histogram_samples", histogramSampleCount),
 	)
 	writeQueryResponse(w, res, qapi.l)
 }
@@ -569,10 +571,12 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Add result metrics to span
-	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
+	seriesCount, floatSampleCount, histogramSampleCount := util.ComputeResultMetrics(res.Value)
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
-		attribute.Int64("result.samples", sampleCount),
+		attribute.Int64("result.total_samples", floatSampleCount+histogramSampleCount),
+		attribute.Int64("result.float_samples", floatSampleCount),
+		attribute.Int64("result.histogram_samples", histogramSampleCount),
 	)
 	writeQueryResponse(w, res, qapi.l)
 }

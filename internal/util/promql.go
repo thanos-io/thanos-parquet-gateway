@@ -9,21 +9,27 @@ import (
 	"github.com/prometheus/prometheus/promql/parser"
 )
 
-// ComputeResultMetrics returns series and sample counts for a PromQL query result.
-func ComputeResultMetrics(value parser.Value) (seriesCount, sampleCount int64) {
+// ComputeResultMetrics returns series, float sample, and histogram sample counts for a PromQL query result.
+func ComputeResultMetrics(value parser.Value) (seriesCount, floatSampleCount, histogramSampleCount int64) {
 	switch results := value.(type) {
 	case promql.Vector:
 		seriesCount = int64(len(results))
-		sampleCount = int64(len(results))
+		for _, s := range results {
+			if s.H != nil {
+				histogramSampleCount++
+			} else {
+				floatSampleCount++
+			}
+		}
 	case promql.Matrix:
 		seriesCount = int64(len(results))
 		for _, series := range results {
-			sampleCount += int64(len(series.Floats))
-			sampleCount += int64(len(series.Histograms))
+			floatSampleCount += int64(len(series.Floats))
+			histogramSampleCount += int64(len(series.Histograms))
 		}
 	case promql.Scalar:
 		seriesCount = 1
-		sampleCount = 1
+		floatSampleCount = 1
 	}
 	return
 }
