@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/stats"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +33,9 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -239,6 +243,11 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
 
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
+
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
 	}
@@ -268,6 +277,7 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			return err
 		}
 	}
+	util.InjectResultMetrics(span, res.Value)
 	switch results := res.Value.(type) {
 	case promql.Vector:
 		for _, result := range results {
@@ -304,6 +314,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
 
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
+
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
 	}
@@ -332,6 +347,7 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			return err
 		}
 	}
+	util.InjectResultMetrics(span, res.Value)
 	switch results := res.Value.(type) {
 	case promql.Matrix:
 		for _, result := range results {
@@ -363,7 +379,6 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			return err
 		}
 	}
-
 	if stats := qry.Stats(); stats != nil {
 		if err := srv.Send(querypb.NewQueryRangeStatsResponse(toQueryStats(stats))); err != nil {
 			return err
@@ -374,12 +389,16 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 }
 
 func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
+	span := tracing.SpanFromContext(srv.Context())
+
 	qryable := qs.queryable(request.WithoutReplicaLabels...)
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
+
+	span.SetAttributes(attribute.StringSlice("series.matchers", matchers.ToStringSlice(ms)))
 
 	hints := &storage.SelectHints{
 		Start: request.MinTime,
@@ -402,20 +421,20 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	css := cq.Select(srv.Context(), true, hints, ms...)
 
 	var (
-		i  = int64(0)
-		it chunks.Iterator
+		seriesCount = int64(0)
+		sampleCount = int64(0)
+		it          chunks.Iterator
 	)
 	for css.Next() {
-		i++
-
 		series := css.At()
 
-		if request.Limit > 0 && i > request.Limit {
+		if request.Limit > 0 && seriesCount >= request.Limit {
 			if err := srv.Send(storepb.NewWarnSeriesResponse(warnings.ErrorTruncatedResponse)); err != nil {
 				return status.Error(codes.Aborted, err.Error())
 			}
 			break
 		}
+		seriesCount++
 
 		storeSeries := storepb.Series{Labels: zLabelsFromMetric(series.Labels())}
 
@@ -433,6 +452,7 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 					Data: chk.Chunk.Bytes(),
 				},
 			})
+			sampleCount += int64(chk.Chunk.NumSamples())
 		}
 		if err := it.Err(); err != nil {
 			return status.Error(codes.Internal, err.Error())
@@ -454,6 +474,11 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 			return status.Error(codes.Aborted, err.Error())
 		}
 	}
+
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 
 	return nil
 }

@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	matcherspkg "github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
@@ -130,7 +131,7 @@ func (q ShardQuerier) LabelValues(ctx context.Context, name string, hints *stora
 	ctx, span := tracing.Tracer().Start(ctx, "Label Values Shard")
 	defer span.End()
 
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.StringSlice("shard.replica_labels", q.replicaLabelNames))
 	span.SetAttributes(attribute.String("shard.external_labels", q.extlabels.String()))
 
@@ -164,7 +165,7 @@ func (q ShardQuerier) LabelNames(ctx context.Context, hints *storage.LabelHints,
 	ctx, span := tracing.Tracer().Start(ctx, "Label Names Shard")
 	defer span.End()
 
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.StringSlice("shard.replica_labels", q.replicaLabelNames))
 	span.SetAttributes(attribute.String("shard.external_labels", q.extlabels.String()))
 
@@ -198,20 +199,12 @@ func (q ShardQuerier) Select(ctx context.Context, sorted bool, hints *storage.Se
 	return newLazySeriesSet(ctx, q.selectFn, sorted, hints, matchers...)
 }
 
-func matchersToStringSlice(matchers []*labels.Matcher) []string {
-	res := make([]string, len(matchers))
-	for i := range matchers {
-		res[i] = matchers[i].String()
-	}
-	return res
-}
-
 func (q ShardQuerier) selectCore(ctx context.Context, spanName string, sorted bool, hints *storage.SelectHints, matchers ...*labels.Matcher) ([]search.SeriesChunks, annotations.Annotations, error) {
 	ctx, span := tracing.Tracer().Start(ctx, spanName)
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", sorted))
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.StringSlice("shard.replica_labels", q.replicaLabelNames))
 	span.SetAttributes(attribute.String("shard.external_labels", q.extlabels.String()))
 

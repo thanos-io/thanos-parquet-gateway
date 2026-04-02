@@ -407,6 +407,7 @@ func (qapi *queryAPI) queryable() storage.Queryable {
 	)
 }
 
+
 func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	span := tracing.SpanFromContext(ctx)
@@ -476,6 +477,8 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Add result metrics to span
+	util.InjectResultMetrics(span, res.Value)
 	writeQueryResponse(w, res, qapi.l)
 }
 
@@ -561,6 +564,8 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Add result metrics to span
+	util.InjectResultMetrics(span, res.Value)
 	writeQueryResponse(w, res, qapi.l)
 }
 
@@ -648,6 +653,10 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to merge series: %s", err)}, qapi.l)
 		return
 	}
+
+	span.SetAttributes(
+		attribute.Int("result.series", len(series)),
+	)
 
 	writeSeriesResponse(w, series, annos, qapi.l)
 }

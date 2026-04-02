@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	matcherspkg "github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
@@ -391,7 +392,7 @@ func (q DBQuerier) selectFn(ctx context.Context, sorted bool, hints *storage.Sel
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", sorted))
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.Int("block.shards", len(q.blocks)))
 
 	// If we need to merge multiple series sets vertically we need them sorted
@@ -431,7 +432,7 @@ func (q *DBChunkQuerier) selectChunksFn(ctx context.Context, sorted bool, hints 
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", sorted))
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.Int("block.shards", len(q.blocks)))
 
 	// If we need to merge multiple series sets vertically we need them sorted

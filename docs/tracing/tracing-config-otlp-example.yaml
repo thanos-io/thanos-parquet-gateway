@@ -1,0 +1,65 @@
+# Example OTLP tracing configuration for thanos-parquet-gateway
+# This configuration uses the Thanos OTLP package (github.com/thanos-io/thanos/pkg/tracing/otlp)
+# which provides comprehensive OTLP integration with OpenTelemetry.
+
+type: OTLP
+config:
+  # Client type: "grpc" or "http"
+  client_type: grpc
+
+  # Service name identifies this service in traces
+  service_name: parquet-gateway
+
+  # OTLP collector endpoint (without protocol prefix)
+  # For gRPC: typically "collector:4317"
+  # For HTTP: typically "collector:4318"
+  endpoint: localhost:4317
+
+  # Use insecure connection (no TLS)
+  insecure: true
+
+  # Optional: URL path for HTTP client (default: /v1/traces)
+  # url_path: /v1/traces
+
+  # Optional: Compression type ("gzip" or empty for no compression)
+  # compression: gzip
+
+  # Optional: Connection timeout
+  # timeout: 10s
+
+  # Optional: Reconnection period for gRPC client
+  # reconnection_period: 30s
+
+  # Optional: Additional resource attributes
+  # resource_attributes:
+  #   environment: production
+  #   region: us-east-1
+  #   cluster: main
+
+  # Optional: Custom headers for authentication
+  # headers:
+  #   Authorization: Bearer token123
+  #   X-Custom-Header: value
+
+  # Sampling configuration
+  # Sampler types: alwayssample, neversample, traceidratiobased,
+  #                parentbasedalwayssample, parentbasedneversample,
+  #                parentbasedtraceidratiobased
+  sampler_type: alwayssample
+  # For traceidratiobased samplers, specify sampling ratio (0.0 to 1.0)
+  # sampler_param: "0.1"
+
+  # Optional: Retry configuration
+  # retry_config:
+  #   retry_enabled: true
+  #   retry_initial_interval: 5s
+  #   retry_max_interval: 30s
+  #   retry_max_elapsed_time: 5m
+
+  # Optional: TLS configuration (when insecure: false)
+  # tls_config:
+  #   ca_file: /path/to/ca.pem
+  #   cert_file: /path/to/cert.pem
+  #   key_file: /path/to/key.pem
+  #   server_name: collector.example.com
+  #   insecure_skip_verify: false
