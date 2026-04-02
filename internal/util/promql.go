@@ -7,10 +7,16 @@ package util
 import (
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// ComputeResultMetrics returns series, float sample, and histogram sample counts for a PromQL query result.
-func ComputeResultMetrics(value parser.Value) (seriesCount, floatSampleCount, histogramSampleCount int64) {
+// InjectResultMetrics adds series and sample count attributes to span for a PromQL query result.
+func InjectResultMetrics(span trace.Span, value parser.Value) {
+	if !span.IsRecording() {
+		return
+	}
+	var seriesCount, floatSampleCount, histogramSampleCount int64
 	switch results := value.(type) {
 	case promql.Vector:
 		seriesCount = int64(len(results))
@@ -31,5 +37,10 @@ func ComputeResultMetrics(value parser.Value) (seriesCount, floatSampleCount, hi
 		seriesCount = 1
 		floatSampleCount = 1
 	}
-	return
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.total_samples", floatSampleCount+histogramSampleCount),
+		attribute.Int64("result.float_samples", floatSampleCount),
+		attribute.Int64("result.histogram_samples", histogramSampleCount),
+	)
 }
