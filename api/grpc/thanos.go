@@ -35,6 +35,7 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -276,13 +277,11 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			return err
 		}
 	}
-	var seriesCount, sampleCount int64
+	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
 	switch results := res.Value.(type) {
 	case promql.Vector:
-		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSamples(result)
-			sampleCount += int64(len(samples)) + int64(len(histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -293,8 +292,6 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			}
 		}
 	case promql.Scalar:
-		seriesCount = 1
-		sampleCount = 1
 		series := &prompb.TimeSeries{Samples: []prompb.Sample{{Value: float64(results.V), Timestamp: int64(results.T)}}}
 		if err := srv.Send(querypb.NewQueryResponse(series)); err != nil {
 			return err
@@ -355,13 +352,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 		}
 	}
 	// TODO native histogram stats in traces, with separate counts for float samples, histogram samples and total
-	var seriesCount, sampleCount int64
+	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
 	switch results := res.Value.(type) {
 	case promql.Matrix:
-		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSeries(result)
-			sampleCount += int64(len(result.Floats)) + int64(len(result.Histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -372,10 +367,8 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			}
 		}
 	case promql.Vector:
-		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSamples(result)
-			sampleCount += int64(len(samples)) + int64(len(histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -386,8 +379,6 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			}
 		}
 	case promql.Scalar:
-		seriesCount = 1
-		sampleCount = 1
 		series := &prompb.TimeSeries{Samples: []prompb.Sample{{Value: float64(results.V), Timestamp: int64(results.T)}}}
 		if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
 			return err

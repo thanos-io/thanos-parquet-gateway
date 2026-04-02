@@ -407,24 +407,6 @@ func (qapi *queryAPI) queryable() storage.Queryable {
 	)
 }
 
-// computeResultMetrics returns series and sample counts for a PromQL query result.
-func computeResultMetrics(value parser.Value) (seriesCount, sampleCount int64) {
-	switch results := value.(type) {
-	case promql.Vector:
-		seriesCount = int64(len(results))
-		sampleCount = int64(len(results))
-	case promql.Matrix:
-		seriesCount = int64(len(results))
-		for _, series := range results {
-			sampleCount += int64(len(series.Floats))
-			sampleCount += int64(len(series.Histograms))
-		}
-	case promql.Scalar:
-		seriesCount = 1
-		sampleCount = 1
-	}
-	return
-}
 
 func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -496,7 +478,7 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Add result metrics to span
-	seriesCount, sampleCount := computeResultMetrics(res.Value)
+	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
 		attribute.Int64("result.samples", sampleCount),
@@ -587,7 +569,7 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Add result metrics to span
-	seriesCount, sampleCount := computeResultMetrics(res.Value)
+	seriesCount, sampleCount := util.ComputeResultMetrics(res.Value)
 	span.SetAttributes(
 		attribute.Int64("result.series", seriesCount),
 		attribute.Int64("result.samples", sampleCount),
