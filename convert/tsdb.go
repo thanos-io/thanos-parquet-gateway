@@ -32,6 +32,7 @@ type indexRowReader struct {
 	concurrency int
 
 	columnCache map[string]int
+	numColumns  int
 }
 
 var _ parquet.RowReader = &indexRowReader{}

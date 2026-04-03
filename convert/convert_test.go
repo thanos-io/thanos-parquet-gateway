@@ -462,6 +462,74 @@ func TestConverterStackOverflow(t *testing.T) {
 	}
 }
 
+func TestShardSeriesIndexBoundary(t *testing.T) {
+	st := teststorage.New(t)
+	t.Cleanup(func() { _ = st.Close() })
+
+	app := st.Appender(t.Context())
+	ts := time.Second.Milliseconds()
+
+	for i := range 34_000 {
+		lbls := labels.FromStrings(
+			"__name__", fmt.Sprintf("name_%d", i/100),
+			fmt.Sprintf("col_0_%d", i), strconv.Itoa(1),
+		)
+		_, err := app.Append(0, lbls, ts, float64(i))
+		if err != nil {
+			t.Fatalf("unable to append sample: %s", err)
+		}
+	}
+	if err := app.Commit(); err != nil {
+		t.Fatalf("unable to commit samples: %s", err)
+	}
+
+	h := st.Head()
+	if err := st.CompactHead(tsdb.NewRangeHead(h, h.MinTime(), h.MaxTime())); err != nil {
+		t.Fatalf("unable to compact head: %s", err)
+	}
+	blocks := st.Blocks()
+	blk := blocks[0]
+	ir, err := blk.Index()
+	if err != nil {
+		t.Fatalf("unable to get index reader from block: %s", err)
+	}
+	t.Cleanup(func() { _ = ir.Close() })
+
+	apn, apv := index.AllPostingsKey()
+	p, err := ir.Postings(t.Context(), apn, apv)
+	if err != nil {
+		t.Fatalf("unable to get postings: %s", err)
+	}
+
+	cOpts := convertOpts{
+		sortLabels:   []string{labels.MetricName},
+		numRowGroups: 1,
+		rowGroupSize: 40000,
+	}
+
+	readers := []blockIndexReader{
+		{
+			reader:   ir,
+			postings: p,
+			blockID:  blk.Meta().ULID,
+		},
+	}
+	shards, shardCols, err := shardSeries(readers, math.MinInt64, math.MaxInt64, cOpts)
+	if err != nil {
+		t.Fatalf("unable to shard series: %s", err)
+	}
+
+	if n := len(shards); n != 2 {
+		t.Fatalf("unexpected number of shards: %d", n)
+	}
+	if n := len(shardCols[0]); n != 32762 {
+		t.Fatalf("unexpected number of columns in shard 0: %d", n)
+	}
+	if _, ok := shardCols[1][labels.MetricName]; !ok {
+		t.Fatalf("shard 1 is missing the shared metric name column")
+	}
+}
+
 type outOfRangeIndexReader struct{}
 
 func (outOfRangeIndexReader) Symbols() index.StringIter { return index.NewStringListIter(nil) }
