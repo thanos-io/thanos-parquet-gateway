@@ -39,6 +39,16 @@ import (
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
 
+const (
+	targetBatchSizeBytes = 64 * 1024 * 1024
+
+	// maxCellBudget is the maximum number of Parquet cells we allow per RowGroup.
+	maxCellsPerRowGroup   = 100_000_000
+	parquetValueSizeBytes = 24
+	maxRowsPerBatch       = 1024
+	minRowsPerBatch       = 1
+)
+
 type Convertible interface {
 	Index() (tsdb.IndexReader, error)
 	Chunks() (tsdb.ChunkReader, error)
@@ -399,7 +409,8 @@ func shardedIndexRowReader(
 			seriesSets, compareBySortedLabelsFunc(opts.sortLabels), storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge),
 		)
 
-		s := schema.BuildSchemaFromLabels(slices.Sorted(maps.Keys(shardLabelColumns[shardIdx])))
+		sortedLabels := slices.Sorted(maps.Keys(shardLabelColumns[shardIdx]))
+		s := schema.BuildSchemaFromLabels(sortedLabels)
 		shardIndexRowReader[shardIdx] = &indexRowReader{
 			ctx:       ctx,
 			seriesSet: mergeSeriesSet,
@@ -411,6 +422,7 @@ func shardedIndexRowReader(
 			concurrency: opts.encodingConcurrency,
 
 			columnCache: make(map[string]int),
+			numColumns:  len(sortedLabels),
 		}
 	}
 	return shardIndexRowReader, nil
@@ -504,33 +516,32 @@ func shardSeries(
 
 		if curHash != v.labels.Hash() {
 			// New unique series: accumulate its label columns.
+			newLabels := make([]string, 0, v.labels.Len())
 			v.labels.Range(func(l labels.Label) {
 				_, ok := shardLabelColumns[shardIdx][l.Name]
 				if ok {
 					return
 				}
 
-				shardLabelColumns[shardIdx][strings.Clone(l.Name)] = struct{}{}
+				newLabels = append(newLabels, strings.Clone(l.Name))
 			})
 
 			// Cut a new shard every:
 			// * opts.numRowGroups * opts.rowGroupSize unique series
 			// * columns >= math.MaxInt16
-			if shardUniqueCount >= maxSeriesPerShard || len(shardLabelColumns[shardIdx])+schema.ChunkColumnsPerDay+1 >= math.MaxInt16 {
+			if shardUniqueCount >= maxSeriesPerShard || len(shardLabelColumns[shardIdx])+len(newLabels)+schema.ChunkColumnsPerDay+1 >= math.MaxInt16 {
 				// Start a new shard with this series' label columns as the initial set.
 				shardIdx++
 				shards = append(shards, make(map[int][]blockSeries))
-				newLabelCols := make(map[string]struct{})
+				shardLabelColumns = append(shardLabelColumns, make(map[string]struct{}))
+				newLabels = newLabels[:0]
 				v.labels.Range(func(l labels.Label) {
-					_, ok := newLabelCols[l.Name]
-					if ok {
-						return
-					}
-
-					newLabelCols[strings.Clone(l.Name)] = struct{}{}
+					newLabels = append(newLabels, strings.Clone(l.Name))
 				})
-				shardLabelColumns = append(shardLabelColumns, newLabelCols)
 				shardUniqueCount = 0
+			}
+			for _, name := range newLabels {
+				shardLabelColumns[shardIdx][name] = struct{}{}
 			}
 
 			uniqueSeriesCount++
@@ -621,8 +632,20 @@ func newConverter(
 }
 
 func (c *converter) labelWriterOptions() []parquet.WriterOption {
+	numCols := c.rr.numColumns
+	rgs := int64(c.rowGroupSize)
+	if numCols > 0 {
+		currentLoad := rgs * int64(numCols)
+		if currentLoad > maxCellsPerRowGroup {
+			rgs = maxCellsPerRowGroup / int64(numCols)
+		}
+	}
+	if rgs < 1 {
+		rgs = 1
+	}
+
 	return []parquet.WriterOption{
-		parquet.MaxRowsPerRowGroup(int64(c.rowGroupSize)),
+		parquet.MaxRowsPerRowGroup(rgs),
 		parquet.SortingWriterConfig(parquet.SortingColumns(c.sortingColumns...)),
 		parquet.BloomFilters(c.bloomfilterColumns...),
 		parquet.SkipPageBounds(schema.LabelIndexColumn),
@@ -669,7 +692,7 @@ func (c *converter) convertShard(ctx context.Context) (_ bool, rerr error) {
 	}
 	defer errcapture.Do(&rerr, w.Close, "multifile writer close")
 
-	_, err = parquet.CopyRows(w, newBufferedReader(ctx, c.rr))
+	_, err = parquet.CopyRows(w, newBufferedReader(ctx, c.rr, c.rr.numColumns))
 	if err != nil {
 		return false, fmt.Errorf("unable to copy rows to writer: %w", err)
 	}
@@ -724,28 +747,23 @@ func newSplitFileWriter(ctx context.Context, bkt objstore.Bucket, inSchema *parq
 }
 
 func (s *splitPipeFileWriter) WriteRows(rows []parquet.Row) (int, error) {
-	var g errgroup.Group
+	rr := make([]parquet.Row, len(rows))
 	for _, writer := range s.fileWriters {
-		g.Go(func() error {
-			rr := make([]parquet.Row, len(rows))
-			for i, row := range rows {
-				rr[i] = row.Clone()
-			}
-			_, err := writer.conv.Convert(rr)
-			if err != nil {
-				return fmt.Errorf("unable to convert rows: %w", err)
-			}
-			n, err := writer.pw.WriteRows(rr)
-			if err != nil {
-				return fmt.Errorf("unable to write rows: %w", err)
-			}
-			if n != len(rows) {
-				return fmt.Errorf("unable to write rows: %d != %d", n, len(rows))
-			}
-			return nil
-		})
+		for i, row := range rows {
+			rr[i] = row.Clone()
+		}
+		if _, err := writer.conv.Convert(rr); err != nil {
+			return 0, fmt.Errorf("unable to convert rows: %w", err)
+		}
+		n, err := writer.pw.WriteRows(rr)
+		if err != nil {
+			return 0, fmt.Errorf("unable to write rows: %w", err)
+		}
+		if n != len(rows) {
+			return 0, fmt.Errorf("unable to write rows: %d != %d", n, len(rows))
+		}
 	}
-	return len(rows), g.Wait()
+	return len(rows), nil
 }
 
 func (s *splitPipeFileWriter) Close() error {
@@ -779,14 +797,25 @@ type bufferedReader struct {
 	currentIndex int
 }
 
-func newBufferedReader(ctx context.Context, rr parquet.RowReader) *bufferedReader {
+func newBufferedReader(ctx context.Context, rr parquet.RowReader, numColumns int) *bufferedReader {
+	batchSize := maxRowsPerBatch
+	if numColumns > 0 {
+		batchSize = targetBatchSizeBytes / (numColumns * parquetValueSizeBytes)
+	}
+	if batchSize > maxRowsPerBatch {
+		batchSize = maxRowsPerBatch
+	}
+	if batchSize < minRowsPerBatch {
+		batchSize = minRowsPerBatch
+	}
+
 	br := &bufferedReader{
 		rr:    rr,
 		ctx:   ctx,
-		c:     make(chan []parquet.Row, 128),
+		c:     make(chan []parquet.Row, 2),
 		errCh: make(chan error, 1),
 		rowPool: zeropool.New(func() []parquet.Row {
-			return make([]parquet.Row, 128)
+			return make([]parquet.Row, batchSize)
 		}),
 	}
 
