@@ -10,7 +10,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"go.uber.org/goleak"
 )
 
@@ -147,4 +150,42 @@ config:
 			})
 		}
 	})
+}
+
+func TestEngineFromQueryOptsRegistersMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	eng := engineFromQueryOpts(queryOpts{
+		engineTimeout:   5 * time.Minute,
+		defaultLookback: 5 * time.Minute,
+	}, logger, reg)
+	if eng == nil {
+		t.Fatal("engine is nil")
+	}
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gathering metrics: %v", err)
+	}
+
+	want := map[string]dto.MetricType{
+		"thanos_engine_queries":       dto.MetricType_GAUGE,
+		"thanos_engine_queries_total": dto.MetricType_COUNTER,
+	}
+
+	found := make(map[string]bool, len(want))
+	for _, fam := range families {
+		if expectedType, ok := want[fam.GetName()]; ok {
+			if fam.GetType() != expectedType {
+				t.Errorf("metric %s: expected type %s, got %s", fam.GetName(), expectedType, fam.GetType())
+			}
+			found[fam.GetName()] = true
+		}
+	}
+	for name := range want {
+		if !found[name] {
+			t.Errorf("expected metric %s not found in registry", name)
+		}
+	}
 }
