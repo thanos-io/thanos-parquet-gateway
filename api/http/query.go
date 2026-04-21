@@ -336,7 +336,7 @@ func parseMatchersParamForSeries(r *http.Request) ([][]*labels.Matcher, error) {
 	if len(matchers) == 0 {
 		return nil, errors.New("no match[] parameter provided")
 	}
-	matcherSets, err := parser.ParseMetricSelectors(matchers)
+	matcherSets, err := parser.NewParser(parser.Options{}).ParseMetricSelectors(matchers)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +356,7 @@ OUTER:
 func parseMatchersParamForLabels(r *http.Request) ([][]*labels.Matcher, error) {
 	matchers := r.Form["match[]"]
 
-	matcherSets, err := parser.ParseMetricSelectors(matchers)
+	matcherSets, err := parser.NewParser(parser.Options{}).ParseMetricSelectors(matchers)
 	if err != nil {
 		return nil, err
 	}
@@ -405,6 +405,25 @@ func (qapi *queryAPI) queryable() storage.Queryable {
 		db.LabelNamesRowCountQuota(qapi.labelNamesRowCountQuota),
 		db.ShardCountQuota(qapi.shardCountQuota),
 	)
+}
+
+// computeResultMetrics returns series and sample counts for a PromQL query result.
+func computeResultMetrics(value parser.Value) (seriesCount, sampleCount int64) {
+	switch results := value.(type) {
+	case promql.Vector:
+		seriesCount = int64(len(results))
+		sampleCount = int64(len(results))
+	case promql.Matrix:
+		seriesCount = int64(len(results))
+		for _, series := range results {
+			sampleCount += int64(len(series.Floats))
+			sampleCount += int64(len(series.Histograms))
+		}
+	case promql.Scalar:
+		seriesCount = 1
+		sampleCount = 1
+	}
+	return
 }
 
 func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
@@ -476,6 +495,12 @@ func (qapi *queryAPI) query(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Add result metrics to span
+	seriesCount, sampleCount := computeResultMetrics(res.Value)
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 	writeQueryResponse(w, res, qapi.l)
 }
 
@@ -561,6 +586,12 @@ func (qapi *queryAPI) queryRange(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Add result metrics to span
+	seriesCount, sampleCount := computeResultMetrics(res.Value)
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 	writeQueryResponse(w, res, qapi.l)
 }
 
@@ -648,6 +679,10 @@ func (qapi *queryAPI) series(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, errorResponse{Typ: errInternal, Err: fmt.Errorf("unable to merge series: %s", err)}, qapi.l)
 		return
 	}
+
+	span.SetAttributes(
+		attribute.Int("result.series", len(series)),
+	)
 
 	writeSeriesResponse(w, series, annos, qapi.l)
 }

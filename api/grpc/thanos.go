@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/util/annotations"
 	"github.com/prometheus/prometheus/util/stats"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -32,6 +33,8 @@ import (
 
 	"github.com/thanos-io/thanos-parquet-gateway/db"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
+	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
 	"github.com/thanos-io/thanos-parquet-gateway/schema"
 )
@@ -239,6 +242,11 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
 
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
+
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
 	}
@@ -268,10 +276,13 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			return err
 		}
 	}
+	var seriesCount, sampleCount int64
 	switch results := res.Value.(type) {
 	case promql.Vector:
+		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSamples(result)
+			sampleCount += int64(len(samples)) + int64(len(histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -282,11 +293,17 @@ func (qs *QueryServer) Query(req *querypb.QueryRequest, srv querypb.Query_QueryS
 			}
 		}
 	case promql.Scalar:
+		seriesCount = 1
+		sampleCount = 1
 		series := &prompb.TimeSeries{Samples: []prompb.Sample{{Value: float64(results.V), Timestamp: int64(results.T)}}}
 		if err := srv.Send(querypb.NewQueryResponse(series)); err != nil {
 			return err
 		}
 	}
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 	if stats := qry.Stats(); stats != nil {
 		if err := srv.Send(querypb.NewQueryStatsResponse(toQueryStats(stats))); err != nil {
 			return err
@@ -303,6 +320,11 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 
 	ctx, cancel := context.WithTimeout(srv.Context(), timeout)
 	defer cancel()
+
+	span := tracing.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("query.expr", req.Query),
+	)
 
 	if err := qs.concurrentQuerySemaphore.Reserve(ctx); err != nil {
 		return status.Error(codes.Aborted, fmt.Sprintf("semaphore blocked: %s", err))
@@ -332,10 +354,14 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			return err
 		}
 	}
+	// TODO native histogram stats in traces, with separate counts for float samples, histogram samples and total
+	var seriesCount, sampleCount int64
 	switch results := res.Value.(type) {
 	case promql.Matrix:
+		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSeries(result)
+			sampleCount += int64(len(result.Floats)) + int64(len(result.Histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -346,8 +372,10 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			}
 		}
 	case promql.Vector:
+		seriesCount = int64(len(results))
 		for _, result := range results {
 			samples, histograms := prompb.SamplesFromPromqlSamples(result)
+			sampleCount += int64(len(samples)) + int64(len(histograms))
 			series := &prompb.TimeSeries{
 				Samples:    samples,
 				Histograms: histograms,
@@ -358,11 +386,17 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 			}
 		}
 	case promql.Scalar:
+		seriesCount = 1
+		sampleCount = 1
 		series := &prompb.TimeSeries{Samples: []prompb.Sample{{Value: float64(results.V), Timestamp: int64(results.T)}}}
 		if err := srv.Send(querypb.NewQueryRangeResponse(series)); err != nil {
 			return err
 		}
 	}
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 
 	if stats := qry.Stats(); stats != nil {
 		if err := srv.Send(querypb.NewQueryRangeStatsResponse(toQueryStats(stats))); err != nil {
@@ -374,12 +408,16 @@ func (qs *QueryServer) QueryRange(req *querypb.QueryRangeRequest, srv querypb.Qu
 }
 
 func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_SeriesServer) (rerr error) {
+	span := tracing.SpanFromContext(srv.Context())
+
 	qryable := qs.queryable(request.WithoutReplicaLabels...)
 
 	ms, err := storepb.MatchersToPromMatchers(request.Matchers...)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
+
+	span.SetAttributes(attribute.StringSlice("series.matchers", matchers.ToStringSlice(ms)))
 
 	hints := &storage.SelectHints{
 		Start: request.MinTime,
@@ -402,20 +440,20 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 	css := cq.Select(srv.Context(), true, hints, ms...)
 
 	var (
-		i  = int64(0)
-		it chunks.Iterator
+		seriesCount = int64(0)
+		sampleCount = int64(0)
+		it          chunks.Iterator
 	)
 	for css.Next() {
-		i++
-
 		series := css.At()
 
-		if request.Limit > 0 && i > request.Limit {
+		if request.Limit > 0 && seriesCount >= request.Limit {
 			if err := srv.Send(storepb.NewWarnSeriesResponse(warnings.ErrorTruncatedResponse)); err != nil {
 				return status.Error(codes.Aborted, err.Error())
 			}
 			break
 		}
+		seriesCount++
 
 		storeSeries := storepb.Series{Labels: zLabelsFromMetric(series.Labels())}
 
@@ -433,6 +471,7 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 					Data: chk.Chunk.Bytes(),
 				},
 			})
+			sampleCount += int64(chk.Chunk.NumSamples())
 		}
 		if err := it.Err(); err != nil {
 			return status.Error(codes.Internal, err.Error())
@@ -454,6 +493,11 @@ func (qs *QueryServer) Series(request *storepb.SeriesRequest, srv storepb.Store_
 			return status.Error(codes.Aborted, err.Error())
 		}
 	}
+
+	span.SetAttributes(
+		attribute.Int64("result.series", seriesCount),
+		attribute.Int64("result.samples", sampleCount),
+	)
 
 	return nil
 }

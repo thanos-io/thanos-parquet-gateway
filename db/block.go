@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/thanos-io/thanos-parquet-gateway/internal/limits"
+	matcherspkg "github.com/thanos-io/thanos-parquet-gateway/internal/matchers"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/tracing"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/util"
 	"github.com/thanos-io/thanos-parquet-gateway/internal/warnings"
@@ -208,7 +209,7 @@ func (q BlockQuerier) selectFn(ctx context.Context, _ bool, hints *storage.Selec
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", true))
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.Int("block.shards", len(q.shards)))
 	span.SetAttributes(attribute.String("block.mint", time.UnixMilli(q.mint).String()))
 	span.SetAttributes(attribute.String("block.maxt", time.UnixMilli(q.maxt).String()))
@@ -239,7 +240,7 @@ func (q *BlockChunkQuerier) selectChunksFn(ctx context.Context, _ bool, hints *s
 	defer span.End()
 
 	span.SetAttributes(attribute.Bool("sorted", true))
-	span.SetAttributes(attribute.StringSlice("matchers", matchersToStringSlice(matchers)))
+	span.SetAttributes(attribute.StringSlice("matchers", matcherspkg.ToStringSlice(matchers)))
 	span.SetAttributes(attribute.Int("block.shards", len(q.shards)))
 
 	sss := make([]storage.ChunkSeriesSet, 0, len(q.shards))
