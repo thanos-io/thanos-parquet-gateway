@@ -1,0 +1,47 @@
+# Example Thanos-compatible tracing configuration for thanos-parquet-gateway
+# See: https://thanos.io/tip/thanos/tracing.md/#opentelemetry-otlp
+
+# Tracing provider type. Supported: OTLP, STDOUT
+type: OTLP
+
+config:
+  # Client type: grpc or http
+  client_type: grpc
+
+  # Service name for traces
+  service_name: parquet-gateway
+
+  # Additional resource attributes to attach to all spans
+  resource_attributes:
+    environment: production
+    version: v1.0.0
+
+  # OTLP endpoint (host:port, without protocol scheme)
+  endpoint: localhost:4317
+
+  # Use insecure connection (no TLS)
+  insecure: true
+
+  # Optional: compression (gzip)
+  # compression: gzip
+
+  # Optional: custom headers for authentication
+  # headers:
+  #   authorization: "Bearer token123"
+
+  # Optional: timeout for sending traces
+  # timeout: 10s
+
+  # Sampling configuration
+  # Supported sampler types:
+  #   - alwayssample / always: Always sample all traces
+  #   - neversample / never: Never sample traces
+  #   - traceidratiobased / probabilistic: Sample based on trace ID ratio
+  #   - parentbasedalwayssample: Parent-based with always sample fallback
+  #   - parentbasedneversample: Parent-based with never sample fallback
+  #   - parentbasedtraceidratiobased: Parent-based with ratio-based fallback
+  sampler_type: parentbasedtraceidratiobased
+
+  # Sampling parameter (used with ratio-based samplers)
+  # Value between 0.0 (0%) and 1.0 (100%)
+  sampler_param: "0.1"

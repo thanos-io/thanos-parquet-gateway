@@ -15,7 +15,7 @@ import (
 type matcherSlice []*labels.Matcher
 
 func (a *matcherSlice) Set(value string) error {
-	matchers, err := parser.ParseMetricSelector(value)
+	matchers, err := parser.NewParser(parser.Options{}).ParseMetricSelector(value)
 	if err != nil {
 		return err
 	}

@@ -72,10 +72,13 @@ func (opts *bucketOpts) registerServeFlags(cmd *kingpin.CmdClause) {
 }
 
 func (opts *tracingOpts) registerServeFlags(cmd *kingpin.CmdClause) {
-	cmd.Flag("tracing.exporter.type", "type of tracing exporter").Default("").EnumVar(&opts.exporterType, "JAEGER", "STDOUT", "")
-	cmd.Flag("tracing.jaeger.endpoint", "endpoint to send traces, eg. https://example.com:4318/v1/traces").StringVar(&opts.jaegerEndpoint)
-	cmd.Flag("tracing.sampling.param", "sample of traces to send").Default("0.1").Float64Var(&opts.samplingParam)
-	cmd.Flag("tracing.sampling.type", "type of sampling").Default("PROBABILISTIC").EnumVar(&opts.samplingType, "PROBABILISTIC", "ALWAYS", "NEVER")
+	cmd.Flag("tracing.config-file", "Path to YAML file with tracing configuration. See format details: https://thanos.io/tip/thanos/tracing.md/").StringVar(&opts.configFile)
+	cmd.Flag("tracing.config", "Alternative to 'tracing.config-file'. YAML content for tracing configuration.").StringVar(&opts.config)
+	// Command line tracing config flags are deprecated in favour of the tracing config file
+	cmd.Flag("tracing.exporter.type", "type of tracing exporter: [\"\", \"JAEGER\", \"STDOUT\"]. Default: \"\"\nDEPRECATED: prefer --tracing.config or --tracing.config-file").Default("").Hidden().EnumVar(&opts.exporterType, "JAEGER", "STDOUT", "")
+	cmd.Flag("tracing.jaeger.endpoint", "endpoint to send traces, eg. https://example.com:4318/v1/traces\nDEPRECATED: prefer --tracing.config or --tracing.config-file").Hidden().StringVar(&opts.jaegerEndpoint)
+	cmd.Flag("tracing.sampling.param", "sample of traces to send\nDEPRECATED: prefer --tracing.config or --tracing.config-file").Default("0.1").Hidden().Float64Var(&opts.samplingParam)
+	cmd.Flag("tracing.sampling.type", "type of sampling\nDEPRECATED: prefer --tracing.config or --tracing.config-file").Default("PROBABILISTIC").Hidden().EnumVar(&opts.samplingType, "PROBABILISTIC", "ALWAYS", "NEVER")
 }
 
 func (opts *discoveryOpts) registerServeFlags(cmd *kingpin.CmdClause) {
@@ -140,7 +143,7 @@ func registerServeApp(app *kingpin.Application) (*kingpin.CmdClause, func(contex
 
 		setupInterrupt(ctx, &g, log)
 
-		if err := setupTracing(ctx, opts.tracing); err != nil {
+		if err := setupTracing(ctx, log, opts.tracing); err != nil {
 			return fmt.Errorf("unable to setup tracing: %w", err)
 		}
 

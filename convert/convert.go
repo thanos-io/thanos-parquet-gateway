@@ -165,7 +165,7 @@ func (i *indexReaderSeries) Next() bool {
 		}
 
 		i.sb.Reset()
-		if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks, index.SeriesNoCopy); err != nil {
+		if err := i.reader.reader.Series(i.reader.postings.At(), &i.sb, &i.chks); err != nil {
 			i.l = labels.EmptyLabels()
 			return false
 		}
@@ -391,7 +391,7 @@ func shardedIndexRowReader(
 				refs = append(refs, series.ref)
 			}
 			postings := index.NewListPostings(refs)
-			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false, true)
+			seriesSet := tsdb.NewBlockChunkSeriesSet(blk.Meta().ULID, indexr, chunkr, tombsr, postings, mint, maxt, false)
 			seriesSets = append(seriesSets, seriesSet)
 		}
 
