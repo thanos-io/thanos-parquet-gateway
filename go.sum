@@ -679,14 +679,14 @@ github.com/prometheus/otlptranslator v1.0.0 h1:s0LJW/iN9dkIH+EnhiD3BlkkP5QVIUVEo
 github.com/prometheus/otlptranslator v1.0.0/go.mod h1:vRYWnXvI6aWGpsdY/mOT/cbeVRBlPWtBNDb7kGR3uKM=
 github.com/prometheus/procfs v0.17.0 h1:FuLQ+05u4ZI+SS/w9+BWEM2TXiHKsUQ9TADiRH7DuK0=
 github.com/prometheus/procfs v0.17.0/go.mod h1:oPQLaDAMRbA+u8H5Pbfq+dl3VDAvHxMUOVhe0wYB2zw=
+github.com/prometheus/prometheus v0.311.1 h1:15uKGfULPFWIIvrY46PiqyaXTHU+4HO3c/SFz7Z1sEY=
+github.com/prometheus/prometheus v0.311.1/go.mod h1:gjsCxTKtHO1Q8T9333u1s+lUR1OjPyM7ruuGH8RvVyo=
 github.com/prometheus/sigv4 v0.4.1 h1:EIc3j+8NBea9u1iV6O5ZAN8uvPq2xOIUPcqCTivHuXs=
 github.com/prometheus/sigv4 v0.4.1/go.mod h1:eu+ZbRvsc5TPiHwqh77OWuCnWK73IdkETYY46P4dXOU=
 github.com/puzpuzpuz/xsync/v4 v4.4.0 h1:vlSN6/CkEY0pY8KaB0yqo/pCLZvp9nhdbBdjipT4gWo=
 github.com/puzpuzpuz/xsync/v4 v4.4.0/go.mod h1:VJDmTCJMBt8igNxnkQd86r+8KUeN1quSfNKu5bLYFQo=
 github.com/ringerc/thanos-patches v0.0.0-20260421040247-5b067c41826f h1:WJCudOHy7Z6+7s9KV2Ie6ny12p142mqwWAjZXSVo22M=
 github.com/ringerc/thanos-patches v0.0.0-20260421040247-5b067c41826f/go.mod h1:h7xosDkWZXpiC6LiRMMIpFfjqRcA5gn3E3mAlbFJjpc=
-github.com/ringerc/thanos-prometheus-patches v0.0.0-20260421012840-fd0009e926e2 h1:EY/64E4iAdzg1S41k051kVIptJVd+cpNp+WD8vt46KY=
-github.com/ringerc/thanos-prometheus-patches v0.0.0-20260421012840-fd0009e926e2/go.mod h1:gjsCxTKtHO1Q8T9333u1s+lUR1OjPyM7ruuGH8RvVyo=
 github.com/ringerc/thanos-promql-engine-patches v0.0.0-20260421011945-5faf9ca01a87 h1:Sb9MQheIXMisDv9DQ+Q7Pawrb5vWSXb4kUNDCBbWzb8=
 github.com/ringerc/thanos-promql-engine-patches v0.0.0-20260421011945-5faf9ca01a87/go.mod h1:DK4JAHccwcvw3ly5eQU0mmSZ+gqmgoFJx75bry273mQ=
 github.com/rogpeppe/fastuuid v1.2.0/go.mod h1:jVj6XXZzXRy/MSR5jhDC/2q6DgLz+nrA6LYCDYWNEvQ=

@@ -260,8 +260,6 @@ require (
 )
 
 replace (
-	// Prometheus 3.11 with nocopy patch
-	github.com/prometheus/prometheus => github.com/ringerc/thanos-prometheus-patches v0.0.0-20260421012840-fd0009e926e2
 	// thanos-promql-engine based in Prometheus 3.11
 	// https://github.com/thanos-io/promql-engine/pull/706
 	github.com/thanos-io/promql-engine => github.com/ringerc/thanos-promql-engine-patches v0.0.0-20260421011945-5faf9ca01a87
