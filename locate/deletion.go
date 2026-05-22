@@ -66,35 +66,26 @@ func (d *RetentionDurationDeleter) DeleteMarkedStreams(ctx context.Context) erro
 	}
 
 	for _, dp := range deletePaths {
-		if err := d.bkt.Delete(ctx, path.Join(dp, schema.MetaFile)); err != nil && !d.bkt.IsObjNotFoundErr(err) {
-			return fmt.Errorf("deleting meta.pb: %w", err)
+		markerPath := path.Join(dp, DeletionMarkerName)
+
+		deleteObjects := []string{}
+		if err := d.bkt.Iter(ctx, dp+"/", func(name string) error {
+			if name == markerPath {
+				return nil
+			}
+			deleteObjects = append(deleteObjects, name)
+			return nil
+		}, objstore.WithRecursiveIter()); err != nil {
+			return fmt.Errorf("iterating marked stream %s: %w", dp, err)
 		}
 
-		for i := 0; ; i++ {
-			var notFoundErrs = 0
-
-			if err := d.bkt.Delete(ctx, path.Join(dp, fmt.Sprintf("%d.%s", i, "labels.parquet"))); err != nil {
-				if d.bkt.IsObjNotFoundErr(err) {
-					notFoundErrs++
-				} else {
-					return fmt.Errorf("deleting shard: %w", err)
-				}
-			}
-
-			if err := d.bkt.Delete(ctx, path.Join(dp, fmt.Sprintf("%d.%s", i, "chunks.parquet"))); err != nil {
-				if d.bkt.IsObjNotFoundErr(err) {
-					notFoundErrs++
-				} else {
-					return fmt.Errorf("deleting shard: %w", err)
-				}
-			}
-
-			if notFoundErrs == 2 {
-				break
+		for _, name := range deleteObjects {
+			if err := d.bkt.Delete(ctx, name); err != nil && !d.bkt.IsObjNotFoundErr(err) {
+				return fmt.Errorf("deleting object %s: %w", name, err)
 			}
 		}
 
-		if err := d.bkt.Delete(ctx, path.Join(dp, DeletionMarkerName)); err != nil {
+		if err := d.bkt.Delete(ctx, markerPath); err != nil && !d.bkt.IsObjNotFoundErr(err) {
 			return fmt.Errorf("deleting deletion marker: %w", err)
 		}
 	}
